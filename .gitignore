@@ -1,0 +1,15 @@
+# 절대 올리면 안 되는 것 — API 키가 든 환경파일
+.env
+backend/.env
+
+# 연구 원자료 DB (학생 데이터). 배포 서버의 디스크에만 둔다.
+*.db
+*.db-wal
+*.db-shm
+backend/*.db*
+
+# 파이썬 가상환경 / 캐시
+.venv/
+backend/.venv/
+__pycache__/
+*.pyc

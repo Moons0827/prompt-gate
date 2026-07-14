@@ -1,0 +1,1058 @@
+"""prompt-gate — 되돌림 루프 시스템.
+
+  학생 프롬프트 → 교사 게이트 → (통과) AI 전송 / (되돌림) 학생에게 반환
+
+핵심 규칙 (README와 동일, 코드로 강제한다):
+  1. 교사는 학생 프롬프트를 대신 고칠 수 없다. 통과 / 되돌림 두 가지뿐.
+  2. 되돌릴 때 붙이는 것은 태그 + 까닭뿐. 고친 문장을 주지 않는다.
+  3. 까닭은 청자의 관점에서 쓴다 (Damen 외, 2021).
+  4. 통제 조건도 AI 응답을 받는다. 차이는 교사가 유해 내용만 차단한다는 점 하나.
+  5. 모델이 되물으면 처치가 오염된다 — 탐지하여 기록한다.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.config import settings
+from app.generators.registry import get_generator
+from app.models import (
+    ActivityOption,
+    AIResponse,
+    Base,
+    Classroom,
+    Condition,
+    Event,
+    JudgeItem,
+    Judgment,
+    PeerReview,
+    PromptVersion,
+    ReasonType,
+    RetraceTag,
+    Review,
+    Status,
+    Submission,
+    Team,
+    TeacherAnswer,
+    TeamNote,
+    TransferPrompt,
+)
+from app.services.fidelity import (
+    NUDGE,
+    check_invariant,
+    classify_reason,
+    edit_distance,
+)
+
+# ─────────────────────────────────────────────────────────────
+# 차시 → 기능(모드) 설정. 로그인에서 고른 차시가 기능을 고정한다.
+#   loop     : 쓰기 → 교사 게이트 → AI (2~5차시 공통 골격)
+#   judge    : AI 답 5개 판정표 (1차시, 학생이 프롬프트를 쓰지 않음)
+#   retrace  : 자기 질문 역추적 · 자기 태그 (6차시, 교사·AI 없음)
+#   peer     : 다른 조 질문에 태그+까닭 (7차시, 되돌림 주체=동료)
+#   transfer : 전이 과제 저장만 (8차시, 되돌림·AI·피드백 없음)
+# ─────────────────────────────────────────────────────────────
+def _judge_gen_prompt(question: str) -> str:
+    """조가 쓴 질문에 대해 서로 다른 답 5개를 번호로 받도록 감싼다."""
+    return (
+        "다음 질문에 대한 서로 다른 답을 다섯 가지, 각각 번호(1~5)를 붙여 "
+        "한 문장으로 알려 줘.\n질문: " + question.strip()
+    )
+
+# 되돌림 태그 레지스트리. 차시마다 어떤 태그를 쓸지 SESSIONS[n]["tags"]로 고른다.
+TAG_LABELS: dict[str, tuple[str, str]] = {
+    "tag_situation": ("[상황]", "우리 학교에서 무슨 일이 있었는지 (숫자·사실)"),
+    "tag_audience":  ("[대상]", "누가 읽을지, 그 사람이 무엇을 모르는지"),
+    "tag_condition": ("[조건]", "우리가 할 수 있는 일 / 할 수 없는 일"),
+    "tag_purpose":   ("[목적]", "AI에게 무엇을 만들어 달라는 것인지"),
+    "tag_role":      ("[역할]", "AI에게 어떤 역할(누구)이 되어 답하라고 했는지"),
+    "tag_example":   ("[예시]", "원하는 답의 예시를 보여 주었는지"),
+}
+BASE_TAGS = ["tag_situation", "tag_audience", "tag_condition", "tag_purpose"]
+
+SESSIONS: dict[int, dict] = {
+    1: {"mode": "judge", "title": "AI는 우리 학교를 모른다",
+        "question": "AI가 우리 학교 급식 문제를 해결해 줄 수 있을까?",
+        "intro": "세계에는 먹을 것이 부족해 굶주리는 사람들이 많습니다. 하지만 우리 학교에서는 "
+                 "먹지 않고 버리는 급식이 생기고 있습니다. 우리는 기아 문제에 관심을 가지고, 먹을 "
+                 "만큼만 급식을 받아 남김없이 먹는 '급식 잔반 줄이기 프로젝트'를 실천하려고 합니다. "
+                 "우리가 할 수 있는 방법을 찾아보기 위해 AI와 함께 이 프로젝트를 진행합니다.",
+        "teacher_compare": True},   # 활동3: 교사의 상세 프롬프트 답과 비교
+    2: {"mode": "loop", "title": "급식을 가장 많이 남기는 친구",
+        "question": "급식을 가장 많이 남기는 친구는 누구일까?",
+        "intro": "우리는 AI에게 우리의 정보를 주지 않고 질문을 하면 원하는 답변을 얻기 어렵다는 것을 "
+                 "배웠습니다. 그렇다면 어떤 정보를 줘야 AI에게 원하는 답변을 받을 수 있을까요? "
+                 "그냥 정보를 많이 제공하면 될까요?",
+        "placeholder": "우리 반 급식 잔반을 3일 동안 조사하려고 해요. "
+                       "어떻게 조사하면 좋을지 물어보세요. (우리 반 상황을 알려 주는 것을 잊지 마세요)",
+        "answers": 5,      # 통과 시 AI가 5가지로 답한다
+        "options": True},  # 활동3: 통과 답 5개를 O/X 적합 판정 + 최종 선정
+    3: {"mode": "loop", "title": "왜? 를 다섯 번",
+        "question": "왜 남기는지, 다섯 번 물어보자.",
+        "placeholder": "우리 반이 남긴 것을 숫자로 넣어서 '왜?'를 물어보세요."},
+    4: {"mode": "loop", "title": "우리 아이디어 vs AI 아이디어",
+        "question": "우리 아이디어와 AI 아이디어, 어느 쪽이 나을까?",
+        "placeholder": "우리가 '할 수 있는 일 / 없는 일'을 조건으로 넣어 아이디어를 물어보세요."},
+    5: {"mode": "loop", "title": "같은 학교인데 왜 못 알아들을까",
+        "question": "같은 학교에 다니는데도, 왜 어떤 사람은 우리 포스터를 못 알아들을까?",
+        "placeholder": "그 사람이 무엇을 모르는지 + 우리 반 자료를 넣어 포스터 문구를 부탁하세요.",
+        "selfcheck": [
+            "그 사람이 무엇을 모르는지 적었는가?",
+            "우리 반 자료(숫자)를 넣었는가?",
+            "무엇을 하게 하고 싶은지 적었는가?",
+        ]},
+    6: {"mode": "retrace", "title": "스티커가 왜 안 붙었을까",
+        "question": "스티커가 왜 그만큼밖에 안 붙었을까? 우리 질문을 다시 보자."},
+    7: {"mode": "peer", "title": "남의 질문에서 빠진 것 찾기",
+        "question": "다른 모둠의 질문에서 빠진 것을 찾아 주자."},
+    8: {"mode": "transfer", "title": "새 문제에 혼자",
+        "question": "새로운 문제에 혼자서 질문해 보자. (우리 학교 전기 절약)"},
+}
+LOOP_SESSIONS = {n for n, c in SESSIONS.items() if c["mode"] == "loop"}
+
+# 태그를 쓰는 차시(되돌림 있는 차시)에 기본 4태그를 붙인다.
+for _n, _cfg in SESSIONS.items():
+    if _cfg["mode"] in ("loop", "retrace", "peer"):
+        _cfg.setdefault("tags", list(BASE_TAGS))
+# 2차시(역할 부여 차시)는 6태그 — 목적·상황·대상·조건·역할·예시
+SESSIONS[2]["tags"] = [
+    "tag_purpose", "tag_situation", "tag_audience", "tag_condition", "tag_role", "tag_example",
+]
+
+engine = create_engine(
+    settings.DB_URL, connect_args={"check_same_thread": False}
+)
+with engine.connect() as conn:
+    conn.exec_driver_sql("PRAGMA journal_mode=WAL")
+SessionLocal = sessionmaker(bind=engine)
+Base.metadata.create_all(engine)
+
+app = FastAPI(title="prompt-gate")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+def db() -> Session:
+    s = SessionLocal()
+    try:
+        yield s
+    finally:
+        s.close()
+
+
+def log(s: Session, kind: str, submission_id: int | None = None, **payload) -> None:
+    s.add(
+        Event(
+            kind=kind,
+            submission_id=submission_id,
+            payload=json.dumps(payload, ensure_ascii=False),
+        )
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# 조 (로그인·제출·대화의 단위 — 조원 전체가 공유한다)
+# ─────────────────────────────────────────────────────────────
+@app.get("/api/config/sessions")
+def session_config():
+    """차시별 기능(모드) 설정. 프런트가 이걸로 차시별 화면·태그를 고른다."""
+    out = []
+    for n, cfg in sorted(SESSIONS.items()):
+        d = {"no": n, **cfg}
+        if "tags" in cfg:  # 태그 키를 라벨·설명이 붙은 객체로 펼친다
+            d["tags"] = [
+                {"key": k, "label": TAG_LABELS[k][0], "desc": TAG_LABELS[k][1]} for k in cfg["tags"]
+            ]
+        out.append(d)
+    return {"sessions": out}
+
+
+@app.get("/api/classrooms")
+def classrooms(s: Session = Depends(db)):
+    """조별 로그인 화면용. 학급과 그 안의 조 목록을 준다."""
+    out = []
+    for cr in s.scalars(select(Classroom).order_by(Classroom.id)).all():
+        out.append(
+            {
+                "classroom_id": cr.id,
+                "school": cr.school,
+                "name": cr.name,
+                "condition": cr.condition.value,
+                "teams": [
+                    {"team_id": t.id, "number": t.number}
+                    for t in sorted(cr.teams, key=lambda t: t.number)
+                ],
+            }
+        )
+    return out
+
+
+class SubmitIn(BaseModel):
+    team_id: int
+    session_no: int = Field(ge=1, le=8)
+    prompt: str = Field(min_length=1)
+
+
+@app.post("/api/team/submit")
+def submit(body: SubmitIn, s: Session = Depends(db)):
+    """조의 새 프롬프트 제출, 또는 되돌아온 것을 고쳐서 재제출.
+
+    조 단위 루프이므로 이 게이트는 조 전체에 걸린다 — 한 조원의 질문이
+    교사 검토 중이면 같은 조의 다른 조원도 새 질문을 낼 수 없다.
+    """
+    if body.session_no not in LOOP_SESSIONS:
+        raise HTTPException(
+            400,
+            f"{body.session_no}차시는 되돌림 루프를 쓰지 않습니다. "
+            "이 차시의 전용 활동 화면을 쓰세요.",
+        )
+    sub = s.scalar(
+        select(Submission)
+        .where(
+            Submission.team_id == body.team_id,
+            Submission.session_no == body.session_no,
+        )
+        .order_by(Submission.id.desc())
+    )
+    if sub is None or sub.status in (Status.PASSED, Status.BLOCKED):
+        sub = Submission(team_id=body.team_id, session_no=body.session_no)
+        s.add(sub)
+        s.flush()
+        v_no = 1
+        dist = 0
+    else:
+        if sub.status != Status.RETURNED:
+            raise HTTPException(409, "아직 교사 검토 중입니다.")
+        prev = sub.versions[-1]
+        v_no = prev.version + 1
+        dist = edit_distance(prev.student_prompt, body.prompt)
+        sub.status = Status.PENDING
+
+    v = PromptVersion(
+        submission_id=sub.id,
+        version=v_no,
+        student_prompt=body.prompt.strip(),
+        edit_distance=dist,
+    )
+    s.add(v)
+    log(s, "submit", sub.id, version=v_no, edit_distance=dist, chars=len(body.prompt))
+    s.commit()
+    return {"submission_id": sub.id, "version": v_no, "status": sub.status.value}
+
+
+def _tags_of(r: Review) -> list[str]:
+    return [
+        t
+        for t, on in [
+            ("[상황]", r.tag_situation),
+            ("[대상]", r.tag_audience),
+            ("[조건]", r.tag_condition),
+            ("[목적]", r.tag_purpose),
+            ("[역할]", r.tag_role),
+            ("[예시]", r.tag_example),
+        ]
+        if on
+    ]
+
+
+@app.get("/api/team/{team_id}/session/{session_no}")
+def team_state(team_id: int, session_no: int, s: Session = Depends(db)):
+    """조 공유 화면. 같은 조원이 이 조의 모든 프롬프트·되돌림·AI 답을 다 본다.
+
+    threads : 이 조가 이 차시에 만든 되돌림 루프 전부(오래된 순).
+    active  : 지금 편집 가능한 루프(pending/returned). 없으면 새 질문을 낸다.
+    """
+    team = s.get(Team, team_id)
+    if not team:
+        raise HTTPException(404, "없는 조")
+
+    subs = s.scalars(
+        select(Submission)
+        .where(Submission.team_id == team_id, Submission.session_no == session_no)
+        .order_by(Submission.id)
+    ).all()
+
+    threads = []
+    active_id, active_status = None, None
+    for sub in subs:
+        versions = []
+        for v in sub.versions:
+            item = {
+                "version": v.version,
+                "prompt": v.student_prompt,
+                "returned": False,
+                "tags": [],
+                "reason": "",
+                "ai_text": v.response.text if v.response else "",
+            }
+            if v.review and v.review.decision == Status.RETURNED:
+                item["returned"] = True
+                item["tags"] = _tags_of(v.review)
+                item["reason"] = v.review.reason
+            versions.append(item)
+        threads.append(
+            {
+                "submission_id": sub.id,
+                "status": sub.status.value,
+                "return_count": sub.return_count,
+                "versions": versions,
+            }
+        )
+        if sub.status in (Status.PENDING, Status.RETURNED):
+            active_id, active_status = sub.id, sub.status.value
+
+    return {
+        "team_no": team.number,
+        "condition": team.classroom.condition.value,
+        "threads": threads,
+        "active_id": active_id,
+        "active_status": active_status,
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# 교사
+# ─────────────────────────────────────────────────────────────
+@app.get("/api/teacher/queue/{classroom_id}")
+def queue(classroom_id: int, s: Session = Depends(db)):
+    rows = s.execute(
+        select(Submission, PromptVersion, Team, Classroom)
+        .join(Team, Team.id == Submission.team_id)
+        .join(Classroom, Classroom.id == Team.classroom_id)
+        .join(PromptVersion, PromptVersion.submission_id == Submission.id)
+        .where(Classroom.id == classroom_id, Submission.status == Status.PENDING)
+        .order_by(Submission.id, PromptVersion.version.desc())
+    ).all()
+    seen, out = set(), []
+    for sub, v, tm, cr in rows:
+        if sub.id in seen:
+            continue
+        seen.add(sub.id)
+        out.append(
+            {
+                "submission_id": sub.id,
+                "version_id": v.id,
+                "team_no": tm.number,
+                "condition": cr.condition.value,
+                "session_no": sub.session_no,
+                "return_count": sub.return_count,
+                "version": v.version,
+                "prompt": v.student_prompt,
+            }
+        )
+    return out
+
+
+class ReviewIn(BaseModel):
+    version_id: int
+    decision: str  # passed | returned | blocked
+    teacher_id: str = ""
+    tag_situation: bool = False
+    tag_audience: bool = False
+    tag_condition: bool = False
+    tag_purpose: bool = False
+    tag_role: bool = False       # [역할] — 2차시에서만 쓴다
+    tag_example: bool = False    # [예시] — 2차시에서만 쓴다
+    reason: str = ""
+    # 교사가 프롬프트를 대신 고치려 시도하면 여기 값이 온다 — 거부하고 기록한다.
+    edited_prompt: str | None = None
+
+
+@app.post("/api/teacher/review")
+async def review(body: ReviewIn, s: Session = Depends(db)):
+    v = s.get(PromptVersion, body.version_id)
+    if not v:
+        raise HTTPException(404, "없는 버전")
+    sub = v.submission
+    cond = s.get(Team, sub.team_id).classroom.condition
+
+    # ── 불변식 1 : 교사는 대신 고칠 수 없다
+    if body.edited_prompt is not None and check_invariant(
+        v.student_prompt, body.edited_prompt
+    ):
+        v.invariant_violated = True
+        log(
+            s,
+            "INVARIANT_VIOLATION",
+            sub.id,
+            note="교사가 학생 프롬프트를 대신 고치려 했다",
+            attempted=body.edited_prompt,
+        )
+        s.commit()
+        raise HTTPException(
+            403,
+            "교사는 학생의 프롬프트를 대신 고칠 수 없습니다. "
+            "통과 또는 되돌림만 가능합니다. (시도가 기록되었습니다)",
+        )
+
+    try:
+        dec = Status(body.decision)
+    except ValueError:
+        raise HTTPException(400, "decision은 passed / returned / blocked 중 하나여야 합니다.")
+
+    # ── 통제 조건 : 통과 / 차단(유해)만 가능
+    if cond == Condition.CONTROL and dec == Status.RETURNED:
+        raise HTTPException(
+            400,
+            "통제 조건에서는 교육적 되돌림을 할 수 없습니다. "
+            "통과 또는 유해 차단만 가능합니다.",
+        )
+
+    rtype, rscore = ReasonType.UNKNOWN, 0.0
+    if dec == Status.RETURNED:
+        if not any(
+            [
+                body.tag_situation,
+                body.tag_audience,
+                body.tag_condition,
+                body.tag_purpose,
+                body.tag_role,
+                body.tag_example,
+            ]
+        ):
+            raise HTTPException(400, "되돌리려면 태그를 하나 이상 붙여야 합니다.")
+        if len(body.reason.strip()) < 10:
+            raise HTTPException(400, "까닭을 써 주세요. " + NUDGE)
+        rtype, rscore = classify_reason(body.reason)
+
+    rev = Review(
+        version_id=v.id,
+        decision=dec,
+        tag_situation=body.tag_situation,
+        tag_audience=body.tag_audience,
+        tag_condition=body.tag_condition,
+        tag_purpose=body.tag_purpose,
+        tag_role=body.tag_role,
+        tag_example=body.tag_example,
+        reason=body.reason.strip(),
+        reason_type=rtype,
+        reason_score=rscore,
+        teacher_id=body.teacher_id,
+    )
+    s.add(rev)
+    sub.status = dec
+
+    result = {"decision": dec.value}
+
+    if dec == Status.RETURNED:
+        sub.return_count += 1
+        result["reason_type"] = rtype.value
+        if rtype == ReasonType.ACCURACY:
+            # 차단하지 않는다. 넛지만 한다. 그리고 기록한다.
+            result["nudge"] = NUDGE
+        log(
+            s,
+            "return",
+            sub.id,
+            return_count=sub.return_count,
+            reason_type=rtype.value,
+            reason_score=round(rscore, 2),
+            tags=[
+                t
+                for t, on in [
+                    ("상황", body.tag_situation),
+                    ("대상", body.tag_audience),
+                    ("조건", body.tag_condition),
+                    ("목적", body.tag_purpose),
+                    ("역할", body.tag_role),
+                    ("예시", body.tag_example),
+                ]
+                if on
+            ],
+        )
+        s.commit()
+        return result
+
+    if dec == Status.BLOCKED:
+        log(s, "blocked", sub.id, reason=body.reason[:200])
+        s.commit()
+        return result
+
+    # ── 통과 : 학생 프롬프트를 그대로 전송한다 (sent_prompt는 항상 원문)
+    v.sent_prompt = v.student_prompt
+    v.invariant_violated = check_invariant(v.student_prompt, v.sent_prompt)
+
+    # 일부 차시는 최종 답을 5가지로 받는다(SESSIONS[n]["answers"]). 원문은 그대로 두고,
+    # 생성 호출에만 '다섯 가지로 답하라'는 형식 지시를 얹는다.
+    n_answers = SESSIONS.get(sub.session_no, {}).get("answers", 1)
+    gen_prompt = _judge_gen_prompt(v.sent_prompt) if n_answers >= 5 else v.sent_prompt
+
+    gen = get_generator()
+    g = await gen.generate(gen_prompt)
+
+    if not g.ok:
+        # 생성 실패를 조용히 넘기지 않는다. 학생에게 빈 답을 보여 주면 안 된다.
+        log(s, "GENERATION_ERROR", sub.id, error=g.error, model=g.model)
+        sub.status = Status.PENDING          # 통과를 되돌린다
+        v.sent_prompt = None
+        s.commit()
+        raise HTTPException(502, f"AI 호출 실패: {g.error}")
+
+    resp = AIResponse(
+        version_id=v.id,
+        text=g.text,
+        provider=g.provider,
+        model=g.model,
+        temperature=g.temperature,
+        system_prompt_hash=g.system_prompt_hash,
+        latency_ms=g.latency_ms,
+        asked_back=g.guard.asked_back,
+        gave_advice=g.guard.gave_advice,
+        retried=g.retried,
+        retry_fixed=g.retry_fixed,
+        error=g.error,
+    )
+    s.add(resp)
+
+    # 활동3(2차시 등): 통과한 답을 항목으로 쪼개 조가 O/X 적합 판정하게 한다.
+    # 새 통과가 들어오면 그 조·차시의 이전 옵션을 지우고 최신 답으로 다시 만든다.
+    if SESSIONS.get(sub.session_no, {}).get("options"):
+        for old in s.scalars(
+            select(ActivityOption).where(
+                ActivityOption.team_id == sub.team_id,
+                ActivityOption.session_no == sub.session_no,
+            )
+        ).all():
+            s.delete(old)
+        for i, txt in enumerate(_split_five(g.text), 1):
+            s.add(ActivityOption(
+                team_id=sub.team_id, session_no=sub.session_no, idx=i, text=txt,
+            ))
+
+    log(
+        s,
+        "passed",
+        sub.id,
+        model=g.model,
+        provider=g.provider,
+        temperature=g.temperature,
+        sys_hash=g.system_prompt_hash,
+        latency_ms=g.latency_ms,
+        retried=g.retried,
+        error=g.error,
+    )
+
+    # ⚠ 모델이 되돌림을 대신했다 — 처치 오염
+    if g.guard.contaminated:
+        log(
+            s,
+            "FIDELITY_ALERT_MODEL_ASKED_BACK",
+            sub.id,
+            note=g.guard.note,
+            asked_back=g.guard.asked_back,
+            gave_advice=g.guard.gave_advice,
+            model=g.model,
+            excerpt=g.text[:200],
+        )
+        result["fidelity_alert"] = g.guard.note
+
+    result["ai_text"] = g.text
+    s.commit()
+    return result
+
+
+# ─────────────────────────────────────────────────────────────
+# 1차시 — AI 답 5개 판정표 (judge). 학생은 프롬프트를 쓰지 않는다.
+# ─────────────────────────────────────────────────────────────
+def _split_five(text: str) -> list[str]:
+    """모델이 준 번호 목록을 최대 5개 항목으로 쪼갠다."""
+    parts = re.split(r"\s*(?:^|\n)\s*\d+[\.\)]\s*", text)
+    parts = [p.strip() for p in parts if p.strip()]
+    if len(parts) < 2:  # 번호가 없으면 줄/기호로 나눈다
+        parts = [p.strip() for p in re.split(r"[\n·•]+", text) if p.strip()]
+    return parts[:5] if parts else [text.strip()]
+
+
+class JudgeGenIn(BaseModel):
+    team_id: int
+    prompt: str = Field(min_length=1)   # 조가 AI에게 물어볼 질문
+
+
+@app.post("/api/team/judge/generate")
+async def judge_generate(body: JudgeGenIn, s: Session = Depends(db)):
+    """조가 쓴 질문을 AI에 보내 답 5개를 만든다(조 공유). 이미 있으면 그대로 준다."""
+    team = s.get(Team, body.team_id)
+    if not team:
+        raise HTTPException(404, "없는 조")
+    existing = s.scalars(
+        select(JudgeItem).where(JudgeItem.team_id == body.team_id).order_by(JudgeItem.idx)
+    ).all()
+    if existing:
+        return {"question": existing[0].question,
+                "items": [{"index": it.idx, "text": it.text} for it in existing]}
+
+    question = body.prompt.strip()
+    gen = get_generator()
+    g = await gen.generate(_judge_gen_prompt(question))
+    if not g.ok:
+        raise HTTPException(502, f"AI 호출 실패: {g.error}")
+    items = _split_five(g.text)
+    for i, t in enumerate(items, 1):
+        s.add(JudgeItem(
+            team_id=body.team_id, question=question, idx=i, text=t,
+            provider=g.provider, model=g.model, system_prompt_hash=g.system_prompt_hash,
+        ))
+    log(s, "judge_generate", model=g.model, provider=g.provider, count=len(items), chars=len(question))
+    s.commit()
+    return {"question": question, "items": [{"index": i, "text": t} for i, t in enumerate(items, 1)]}
+
+
+@app.get("/api/team/{team_id}/judge")
+def team_judge_get(team_id: int, s: Session = Depends(db)):
+    """조 판정 화면: 조가 쓴 질문 + 그 질문에 대한 AI 답 5개 + 이 조가 이미 매긴 판정."""
+    team = s.get(Team, team_id)
+    if not team:
+        raise HTTPException(404, "없는 조")
+    items = s.scalars(
+        select(JudgeItem).where(JudgeItem.team_id == team_id).order_by(JudgeItem.idx)
+    ).all()
+    saved = {
+        j.item_index: j
+        for j in s.scalars(select(Judgment).where(Judgment.team_id == team_id)).all()
+    }
+    # 활동3: 교사의 상세 프롬프트 답(학급 공유) + 우리 조의 비교 메모
+    ta = s.scalar(select(TeacherAnswer).where(TeacherAnswer.classroom_id == team.classroom_id))
+    compare = s.scalar(
+        select(TeamNote).where(
+            TeamNote.team_id == team_id, TeamNote.session_no == 1, TeamNote.key == "compare"
+        )
+    )
+    return {
+        "question": items[0].question if items else "",
+        "ready": len(items) > 0,       # 조가 아직 질문을 안 보냈으면 false
+        "items": [
+            {
+                "index": it.idx, "text": it.text,
+                "verdict": saved[it.idx].verdict if it.idx in saved else None,
+                "reason": saved[it.idx].reason if it.idx in saved else "",
+            }
+            for it in items
+        ],
+        "teacher_answer": ({"prompt": ta.prompt, "text": ta.text} if ta else None),
+        "compare": (compare.text if compare else ""),
+    }
+
+
+# ── 1차시 활동3: 교사의 자세한 프롬프트 답(학급 공유) ──────────────────
+class TeacherAnswerIn(BaseModel):
+    classroom_id: int
+    prompt: str = Field(min_length=1)
+
+
+@app.post("/api/teacher/judge/teacher-answer")
+async def teacher_answer_gen(body: TeacherAnswerIn, s: Session = Depends(db)):
+    """교사가 자세한 프롬프트를 AI에 보내 답을 만든다(학급 공유). 다시 누르면 새로 만든다."""
+    cr = s.get(Classroom, body.classroom_id)
+    if not cr:
+        raise HTTPException(404, "없는 학급")
+    gen = get_generator()
+    g = await gen.generate(body.prompt.strip())
+    if not g.ok:
+        raise HTTPException(502, f"AI 호출 실패: {g.error}")
+    for old in s.scalars(
+        select(TeacherAnswer).where(TeacherAnswer.classroom_id == body.classroom_id)
+    ).all():
+        s.delete(old)
+    s.add(TeacherAnswer(
+        classroom_id=body.classroom_id, prompt=body.prompt.strip(), text=g.text,
+        provider=g.provider, model=g.model, system_prompt_hash=g.system_prompt_hash,
+    ))
+    log(s, "teacher_answer", model=g.model, provider=g.provider)
+    s.commit()
+    return {"prompt": body.prompt.strip(), "text": g.text}
+
+
+# ── 조 자유 서술 메모 (1차시 비교, 2차시 최종선정 등) ──────────────────
+class NoteIn(BaseModel):
+    team_id: int
+    session_no: int
+    key: str = Field(min_length=1, max_length=20)
+    text: str = ""
+
+
+@app.post("/api/team/note")
+def team_note(body: NoteIn, s: Session = Depends(db)):
+    row = s.scalar(
+        select(TeamNote).where(
+            TeamNote.team_id == body.team_id,
+            TeamNote.session_no == body.session_no,
+            TeamNote.key == body.key,
+        )
+    )
+    if row:
+        row.text = body.text.strip()
+    else:
+        s.add(TeamNote(
+            team_id=body.team_id, session_no=body.session_no,
+            key=body.key, text=body.text.strip(),
+        ))
+    s.commit()
+    return {"ok": True}
+
+
+# ── 2차시 활동3: 통과 답 O/X 적합 판정 + 최종 선정 ────────────────────
+@app.get("/api/team/{team_id}/activity/{session_no}")
+def activity_get(team_id: int, session_no: int, s: Session = Depends(db)):
+    """통과 답에서 만든 옵션 + O/X 판정 + 최종 선정 메모."""
+    opts = s.scalars(
+        select(ActivityOption)
+        .where(ActivityOption.team_id == team_id, ActivityOption.session_no == session_no)
+        .order_by(ActivityOption.idx)
+    ).all()
+    final = s.scalar(
+        select(TeamNote).where(
+            TeamNote.team_id == team_id, TeamNote.session_no == session_no, TeamNote.key == "final"
+        )
+    )
+    return {
+        "options": [
+            {"idx": o.idx, "text": o.text, "fit": o.fit, "reason": o.reason} for o in opts
+        ],
+        "final": (final.text if final else ""),
+    }
+
+
+class OptionIn(BaseModel):
+    team_id: int
+    session_no: int
+    idx: int
+    fit: bool | None = None    # O=True / X=False / 미정=None
+    reason: str = ""
+
+
+@app.post("/api/team/activity/option")
+def activity_option(body: OptionIn, s: Session = Depends(db)):
+    """한 옵션의 O/X 적합 판정과 이유를 저장한다."""
+    o = s.scalar(
+        select(ActivityOption).where(
+            ActivityOption.team_id == body.team_id,
+            ActivityOption.session_no == body.session_no,
+            ActivityOption.idx == body.idx,
+        )
+    )
+    if not o:
+        raise HTTPException(404, "없는 옵션")
+    if body.fit is False and len(body.reason.strip()) < 2:
+        raise HTTPException(400, "X(적합하지 않음)로 분류하면 이유를 써 주세요.")
+    o.fit, o.reason = body.fit, body.reason.strip()
+    s.commit()
+    return {"ok": True}
+
+
+class JudgeVerdict(BaseModel):
+    item_index: int
+    verdict: int = Field(ge=1, le=3)   # 1 바로쓸수있다 / 2 안맞다 / 3 못한다
+    reason: str = ""
+
+
+class JudgeIn(BaseModel):
+    team_id: int
+    verdicts: list[JudgeVerdict]
+
+
+@app.post("/api/team/judge")
+def team_judge(body: JudgeIn, s: Session = Depends(db)):
+    """조의 판정을 저장(같은 항목은 덮어쓴다). ②·③ 판정에는 까닭이 필요하다."""
+    for jv in body.verdicts:
+        if jv.verdict in (2, 3) and len(jv.reason.strip()) < 2:
+            raise HTTPException(400, f"{jv.item_index}번: ②·③ 판정에는 까닭을 써 주세요.")
+    for jv in body.verdicts:
+        row = s.scalar(
+            select(Judgment).where(
+                Judgment.team_id == body.team_id, Judgment.item_index == jv.item_index
+            )
+        )
+        if row:
+            row.verdict, row.reason = jv.verdict, jv.reason.strip()
+        else:
+            s.add(Judgment(
+                team_id=body.team_id, item_index=jv.item_index,
+                verdict=jv.verdict, reason=jv.reason.strip(),
+            ))
+    s.commit()
+    return {"saved": len(body.verdicts)}
+
+
+# ─────────────────────────────────────────────────────────────
+# 6차시 — 역추적 (retrace). 자기 5차시 질문을 스스로 되짚는다. AI·교사 없음.
+# ─────────────────────────────────────────────────────────────
+def _passed_session5(s: Session, team_id: int) -> list[PromptVersion]:
+    subs = s.scalars(
+        select(Submission).where(Submission.team_id == team_id, Submission.session_no == 5)
+    ).all()
+    return [v for sub in subs for v in sub.versions if v.sent_prompt]
+
+
+@app.get("/api/team/{team_id}/retrace")
+def retrace_get(team_id: int, s: Session = Depends(db)):
+    team = s.get(Team, team_id)
+    if not team:
+        raise HTTPException(404, "없는 조")
+    sources = [{"version_id": v.id, "prompt": v.sent_prompt} for v in _passed_session5(s, team_id)]
+    saved = [
+        {
+            "source_version_id": r.source_version_id,
+            "tags": _retrace_tags(r),
+            "note": r.retrace_note,
+        }
+        for r in s.scalars(
+            select(RetraceTag).where(RetraceTag.team_id == team_id).order_by(RetraceTag.id)
+        ).all()
+    ]
+    return {"sources": sources, "saved": saved}
+
+
+def _retrace_tags(r) -> list[str]:
+    return [
+        t for t, on in [
+            ("[상황]", r.tag_situation), ("[대상]", r.tag_audience),
+            ("[조건]", r.tag_condition), ("[목적]", r.tag_purpose),
+        ] if on
+    ]
+
+
+class RetraceIn(BaseModel):
+    team_id: int
+    source_version_id: int | None = None
+    tag_situation: bool = False
+    tag_audience: bool = False
+    tag_condition: bool = False
+    tag_purpose: bool = False
+    retrace_note: str = ""
+
+
+@app.post("/api/team/retrace")
+def retrace_post(body: RetraceIn, s: Session = Depends(db)):
+    if not any([body.tag_situation, body.tag_audience, body.tag_condition, body.tag_purpose]):
+        raise HTTPException(400, "빠졌다고 생각하는 것에 태그를 하나 이상 붙여 주세요.")
+    if len(body.retrace_note.strip()) < 5:
+        raise HTTPException(400, "결과와 질문을 잇는 역추적을 한 줄로 써 주세요. (예: 1학년 복도에서만 스티커가 적었다 → …)")
+    s.add(RetraceTag(
+        team_id=body.team_id, source_version_id=body.source_version_id,
+        tag_situation=body.tag_situation, tag_audience=body.tag_audience,
+        tag_condition=body.tag_condition, tag_purpose=body.tag_purpose,
+        retrace_note=body.retrace_note.strip(),
+    ))
+    s.commit()
+    return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────
+# 7차시 — 동료 판별 (peer). 다른 조 질문에 태그+까닭을 붙여 되돌린다.
+# ─────────────────────────────────────────────────────────────
+def _latest_prompt(s: Session, team_id: int) -> PromptVersion | None:
+    """그 조의 최신 프롬프트 판(5차시 우선, 없으면 아무 차시)."""
+    subs = s.scalars(
+        select(Submission).where(Submission.team_id == team_id).order_by(Submission.id.desc())
+    ).all()
+    s5 = [sub for sub in subs if sub.session_no == 5]
+    for sub in (s5 + subs):
+        if sub.versions:
+            return sub.versions[-1]
+    return None
+
+
+@app.get("/api/team/{team_id}/peer")
+def peer_get(team_id: int, s: Session = Depends(db)):
+    team = s.get(Team, team_id)
+    if not team:
+        raise HTTPException(404, "없는 조")
+    others = s.scalars(
+        select(Team).where(Team.classroom_id == team.classroom_id, Team.id != team_id)
+        .order_by(Team.number)
+    ).all()
+    done = {
+        pr.target_version_id
+        for pr in s.scalars(select(PeerReview).where(PeerReview.reviewer_team_id == team_id)).all()
+    }
+    targets = []
+    for ot in others:
+        v = _latest_prompt(s, ot.id)
+        if not v:
+            continue
+        targets.append({
+            "team_no": ot.number, "version_id": v.id,
+            "prompt": v.student_prompt, "reviewed": v.id in done,
+        })
+        if len(targets) >= 3:
+            break
+    my_vids = {v.id for sub in
+               s.scalars(select(Submission).where(Submission.team_id == team_id)).all()
+               for v in sub.versions}
+    received = []
+    if my_vids:
+        for pr in s.scalars(
+            select(PeerReview).where(PeerReview.target_version_id.in_(my_vids)).order_by(PeerReview.id)
+        ).all():
+            reviewer = s.get(Team, pr.reviewer_team_id)
+            received.append({
+                "reviewer_no": reviewer.number if reviewer else None,
+                "tags": _retrace_tags(pr), "reason": pr.reason,
+            })
+    return {"targets": targets, "received": received}
+
+
+class PeerReviewIn(BaseModel):
+    reviewer_team_id: int
+    target_version_id: int
+    tag_situation: bool = False
+    tag_audience: bool = False
+    tag_condition: bool = False
+    tag_purpose: bool = False
+    reason: str = ""
+
+
+@app.post("/api/team/peer-review")
+def peer_review_post(body: PeerReviewIn, s: Session = Depends(db)):
+    v = s.get(PromptVersion, body.target_version_id)
+    if not v:
+        raise HTTPException(404, "없는 질문")
+    if not any([body.tag_situation, body.tag_audience, body.tag_condition, body.tag_purpose]):
+        raise HTTPException(400, "빠진 것에 태그를 하나 이상 붙여 주세요.")
+    if len(body.reason.strip()) < 10:
+        raise HTTPException(400, "까닭을 써 주세요. " + NUDGE)
+    rtype, rscore = classify_reason(body.reason)
+    s.add(PeerReview(
+        reviewer_team_id=body.reviewer_team_id, target_version_id=body.target_version_id,
+        tag_situation=body.tag_situation, tag_audience=body.tag_audience,
+        tag_condition=body.tag_condition, tag_purpose=body.tag_purpose,
+        reason=body.reason.strip(), reason_type=rtype, reason_score=rscore,
+    ))
+    s.commit()
+    return {"reason_type": rtype.value}
+
+
+# ─────────────────────────────────────────────────────────────
+# 8차시 — 전이 (transfer). 되돌림·AI·피드백 없음. 저장만 한다.
+# ─────────────────────────────────────────────────────────────
+class TransferIn(BaseModel):
+    team_id: int
+    prompt: str = Field(min_length=1)
+
+
+@app.post("/api/team/transfer")
+def transfer_post(body: TransferIn, s: Session = Depends(db)):
+    s.add(TransferPrompt(team_id=body.team_id, prompt=body.prompt.strip()))
+    s.commit()
+    return {"ok": True}
+
+
+@app.get("/api/team/{team_id}/transfer")
+def transfer_get(team_id: int, s: Session = Depends(db)):
+    team = s.get(Team, team_id)
+    if not team:
+        raise HTTPException(404, "없는 조")
+    rows = s.scalars(
+        select(TransferPrompt).where(TransferPrompt.team_id == team_id).order_by(TransferPrompt.id)
+    ).all()
+    return {"prompts": [{"prompt": r.prompt} for r in rows]}
+
+
+# ─────────────────────────────────────────────────────────────
+# 연구자 — 처치 충실도 내보내기
+# ─────────────────────────────────────────────────────────────
+@app.get("/api/admin/fidelity")
+def fidelity(s: Session = Depends(db)):
+    """논문에 쓸 처치 충실도 지표. 학급별로 낸다."""
+    out = []
+    for cr in s.scalars(select(Classroom)).all():
+        subs = s.scalars(
+            select(Submission)
+            .join(Team, Team.id == Submission.team_id)
+            .where(Team.classroom_id == cr.id)
+        ).all()
+        reviews = [
+            v.review
+            for sub in subs
+            for v in sub.versions
+            if v.review and v.review.decision == Status.RETURNED
+        ]
+        narr = sum(1 for r in reviews if r.reason_type == ReasonType.NARRATIVE)
+        acc = sum(1 for r in reviews if r.reason_type == ReasonType.ACCURACY)
+        responses = [
+            v.response for sub in subs for v in sub.versions if v.response
+        ]
+        asked = sum(1 for r in responses if r.asked_back or r.gave_advice)
+        viol = sum(
+            1 for sub in subs for v in sub.versions if v.invariant_violated
+        )
+        models = sorted({r.model for r in responses})
+        hashes = sorted({r.system_prompt_hash for r in responses})
+        out.append(
+            {
+                "classroom": f"{cr.school} {cr.name}",
+                "condition": cr.condition.value,
+                "submissions": len(subs),
+                "returns": len(reviews),
+                "mean_return_count": (
+                    round(sum(x.return_count for x in subs) / len(subs), 2)
+                    if subs
+                    else 0
+                ),
+                # ★ 처치가 제대로 전달되었는가
+                "narrative_reason_rate": (
+                    round(narr / len(reviews), 2) if reviews else None
+                ),
+                "accuracy_reason_count": acc,
+                # ★ 모델이 되돌림을 대신했는가 (0이어야 한다)
+                "model_asked_back_rate": (
+                    round(asked / len(responses), 3) if responses else None
+                ),
+                # ★ 교사가 대신 고쳤는가 (0이어야 한다)
+                "invariant_violations": viol,
+                # ★ 재현성 — 기간 중 모델이 바뀌지 않았는가
+                "models_used": models,
+                "system_prompt_hashes": hashes,
+            }
+        )
+    return out
+
+
+@app.get("/api/admin/config")
+def config():
+    from app.generators.base import SYSTEM_PROMPT_HASH
+
+    gen = get_generator()
+    return {
+        "generator": settings.GENERATOR,
+        "model": gen.model,
+        "temperature": gen.temperature,
+        "system_prompt_hash": SYSTEM_PROMPT_HASH,
+        "warning": (
+            "NullGenerator는 통제 조건이 아니다. 실제 수업에서는 실모델을 쓴다."
+            if settings.GENERATOR == "null"
+            else ""
+        ),
+    }
+
+
+@app.get("/api/health")
+def health():
+    return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────
+# 프런트 서빙 — 백엔드가 index.html 을 / 에서 함께 준다.
+# 그러면 배포 시 주소가 하나로 통일된다(프런트가 location.origin 을 API로 씀).
+# ─────────────────────────────────────────────────────────────
+FRONTEND_HTML = os.path.join(
+    os.path.dirname(__file__), "..", "..", "frontend", "index.html"
+)
+
+
+@app.get("/")
+def index():
+    return FileResponse(FRONTEND_HTML)

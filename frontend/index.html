@@ -1,0 +1,988 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>prompt-gate — 되돌림 루프</title>
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  :root { --ink:#1a1a1a; --line:#d8d8d8; --blue:#10367b; --red:#b91c1c; --amber:#b45309; --green:#166534; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:'Pretendard','맑은 고딕',system-ui,sans-serif; color:var(--ink); background:#f6f7f9; }
+  .wrap { max-width:980px; margin:0 auto; padding:24px; }
+  h1 { color:var(--blue); font-size:24px; margin:0 0 4px; }
+  .sub { color:#666; font-size:14px; margin-bottom:20px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:18px; margin-bottom:14px; }
+  .card.alert { border-left:6px solid var(--red); background:#fdf2f2; }
+  .card.ok { border-left:6px solid var(--green); background:#f2fbf5; }
+  .card.warn { border-left:6px solid var(--amber); background:#fffaf0; }
+  textarea { width:100%; min-height:100px; padding:12px; border:1px solid var(--line); border-radius:8px; font:inherit; font-size:15px; resize:vertical; }
+  button { padding:10px 18px; border:none; border-radius:8px; font:inherit; font-weight:600; cursor:pointer; }
+  .primary { background:var(--blue); color:#fff; }
+  .pass { background:var(--green); color:#fff; }
+  .return { background:var(--amber); color:#fff; }
+  .block { background:var(--red); color:#fff; }
+  .ghost { background:#eee; color:#333; }
+  .tags { display:flex; gap:8px; flex-wrap:wrap; margin:10px 0; }
+  .tag { padding:7px 12px; border:1px solid var(--line); border-radius:20px; cursor:pointer; user-select:none; font-size:14px; background:#fff; }
+  .tag.on { background:var(--blue); color:#fff; border-color:var(--blue); }
+  .tag.shown { background:#fff3cd; border-color:var(--amber); color:var(--amber); font-weight:600; cursor:default; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .muted { color:#777; font-size:13px; }
+  .prompt { background:#f2f5f9; border-radius:8px; padding:12px; font-size:15px; white-space:pre-wrap; }
+  .nav { display:flex; gap:8px; margin-bottom:16px; }
+  .nav button.on { background:var(--blue); color:#fff; }
+  .hint { font-size:13px; color:var(--amber); margin-top:6px; line-height:1.6; white-space:pre-wrap; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:6px; font-size:12px; font-weight:600; }
+  .b-narr { background:#dcfce7; color:var(--green); }
+  .b-acc { background:#fee2e2; color:var(--red); }
+  .loginpick { transition:border-color .12s, box-shadow .12s; }
+  .loginpick:hover { border-color:var(--blue); box-shadow:0 2px 10px rgba(16,54,123,.12); }
+  select { padding:8px; border:1px solid var(--line); border-radius:8px; font:inherit; font-size:15px; background:#fff; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { border:1px solid var(--line); padding:7px 9px; text-align:left; }
+  th { background:#f2f2f2; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect } = React;
+// 배포: 백엔드가 이 페이지도 같이 서비스하면 자동으로 같은 주소(location.origin)를 쓴다.
+// 프런트와 백엔드를 서로 다른 곳에 올렸다면 이 <script> 앞에서 window.API_BASE = "https://백엔드주소" 로 지정.
+// 로컬에서 파일(file://)로 열면 localhost:8000 을 쓴다.
+const API = window.API_BASE
+  || (location.protocol.startsWith("http") ? location.origin : "http://localhost:8000");
+
+// 되돌림 태그는 차시마다 다르다 — 백엔드 /api/config/sessions 의 cfg.tags 를 쓴다.
+// (기본 4개: 상황·대상·조건·목적, 2차시: 목적·상황·대상·조건·역할·예시)
+
+const STATUS_LABEL = { pending:"검토 중", returned:"돌아옴", passed:"통과", blocked:"차단" };
+
+// ─────────── 조 화면 (같은 조원이 공유) ───────────
+function TeamView({ teamId, teamLabel, sess, cfg, onLogout }) {
+  const [text, setText] = useState("");
+  const [state, setState] = useState(null);
+  const [checks, setChecks] = useState({});   // 5차시 자기점검란
+
+  const load = async () => {
+    const r = await fetch(`${API}/api/team/${teamId}/session/${sess}`);
+    setState(await r.json());
+  };
+  // 조원들이 서로의 제출·AI 답을 곧바로 보도록 자동 갱신한다.
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 4000);
+    return () => clearInterval(t);
+  }, [teamId, sess]);
+
+  const send = async () => {
+    const r = await fetch(`${API}/api/team/submit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ team_id: Number(teamId), session_no: Number(sess), prompt: text }),
+    });
+    if (!r.ok) { alert((await r.json()).detail); return; }
+    setText("");
+    load();
+  };
+
+  const active = state?.active_status;   // pending | returned | null
+  const threads = state?.threads || [];
+
+  return (
+    <div>
+      <ModuleHeader sess={sess} cfg={cfg} teamLabel={teamLabel} onLogout={onLogout}
+        right={<button className="ghost" onClick={load}>새로고침</button>} />
+      <div className="muted" style={{margin:"-6px 0 10px 4px"}}>같은 조원이 이 화면을 함께 봅니다 (4초마다 자동 갱신)</div>
+      {cfg.intro && <div className="card" style={{background:"#eef2f8"}}>{cfg.intro}</div>}
+
+      {threads.length > 0 && (
+        <div className="card">
+          <b>우리 조의 질문과 대화</b>
+          <div className="muted" style={{marginBottom:6}}>조원 모두에게 똑같이 보입니다.</div>
+          {threads.map((th, ti) => (
+            <div key={th.submission_id}
+              style={{marginTop:12, paddingTop:12,
+                      borderTop: ti === 0 ? "none" : "1px dashed var(--line)"}}>
+              <div className="muted">
+                질문 #{ti + 1} · 되돌림 {th.return_count}회 · {STATUS_LABEL[th.status] || th.status}
+              </div>
+              {th.versions.map(v => (
+                <div key={v.version} style={{marginTop:8}}>
+                  <div className="muted">{v.version}판</div>
+                  <div className="prompt">{v.prompt}</div>
+                  {v.returned && (
+                    <div style={{marginTop:6}}>
+                      <div className="tags">
+                        {v.tags.map(t => <span key={t} className="tag shown">{t}</span>)}
+                      </div>
+                      <div className="muted">돌아온 까닭</div>
+                      <div className="prompt" style={{background:"#fff", border:"1px solid #f0c8c8"}}>{v.reason}</div>
+                    </div>
+                  )}
+                  {v.ai_text && (
+                    <div style={{marginTop:6}}>
+                      <div className="muted">AI의 답</div>
+                      <div className="prompt" style={{background:"#fff", border:"1px solid #cde8d5"}}>{v.ai_text}</div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {active === "pending" ? (
+        <div className="card warn">
+          <b>선생님이 보고 계세요.</b>
+          <div className="muted" style={{marginTop:6}}>검토가 끝나면 여기에 결과가 나타납니다.</div>
+        </div>
+      ) : (
+        <div className="card">
+          <b>{active === "returned" ? "고쳐 쓴 질문 (조가 함께 고칩니다)" : "AI에게 보낼 새 질문"}</b>
+          {cfg.answers > 1 && (
+            <div className="muted" style={{marginTop:4}}>통과하면 AI가 {cfg.answers}가지로 답해요.</div>
+          )}
+          {cfg.tags && cfg.tags.length >= 6 && (
+            <div className="muted" style={{marginTop:4}}>
+              질문에 {cfg.tags.map(t=>t.label).join(" ")} 가 있는지 확인해요.
+            </div>
+          )}
+          <textarea value={text} onChange={e=>setText(e.target.value)}
+            placeholder={cfg.placeholder || "AI는 우리 학교를 한 번도 본 적이 없어요. 무엇을 알려 주어야 할까요?"} />
+          {cfg.selfcheck && (
+            <div style={{marginTop:8}}>
+              <div className="muted">보내기 전에 스스로 점검해요</div>
+              {cfg.selfcheck.map((c, i) => (
+                <label key={i} style={{display:"block", fontSize:14, margin:"4px 0"}}>
+                  <input type="checkbox" checked={!!checks[i]}
+                    onChange={e=>setChecks({...checks, [i]: e.target.checked})} /> {c}
+                </label>
+              ))}
+            </div>
+          )}
+          <div className="row" style={{marginTop:10}}>
+            <button className="primary" onClick={send}
+              disabled={!text.trim() || (cfg.selfcheck && !cfg.selfcheck.every((_, i) => checks[i]))}>
+              선생님께 보내기
+            </button>
+            <span className="muted">조원 누구나 보낼 수 있고, 보내면 조원 모두에게 보입니다.</span>
+          </div>
+        </div>
+      )}
+
+      {cfg.options && <ActivitySection teamId={teamId} sess={sess} />}
+    </div>
+  );
+}
+
+// ─────────── 교사 화면 ───────────
+function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
+  const [q, setQ] = useState([]);
+  const [sel, setSel] = useState(null);
+  const [tags, setTags] = useState({});
+  const [reason, setReason] = useState("");
+  const [msg, setMsg] = useState(null);
+  const DEFAULT_TA = "우리 학교 5학년 학생들이 급식 잔반을 줄이려고 해요. 우리 반은 3일 동안 " +
+    "나물을 31번 남겼고, 초등학생이 할 수 있는 방법(포스터 붙이기, 방송하기)만 가능해요. " +
+    "우리가 실제로 할 수 있는 급식 잔반 줄이기 방법을 알려 주세요.";
+  const [taPrompt, setTaPrompt] = useState(DEFAULT_TA);
+  const [ta, setTa] = useState(null);
+
+  const load = async () => {
+    const r = await fetch(`${API}/api/teacher/queue/${classroomId}`);
+    setQ(await r.json());
+  };
+  useEffect(() => { load(); const t = setInterval(load, 5000); return () => clearInterval(t); }, [classroomId]);
+
+  const genTeacherAnswer = async () => {
+    setTa({loading:true});
+    const r = await fetch(`${API}/api/teacher/judge/teacher-answer`, {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({classroom_id: Number(classroomId), prompt: taPrompt})});
+    const d = await r.json();
+    setTa(r.ok ? d : {error: d.detail});
+  };
+
+  const act = async (decision) => {
+    const r = await fetch(`${API}/api/teacher/review`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ version_id: sel.version_id, decision, reason, ...tags }),
+    });
+    const d = await r.json();
+    if (!r.ok) { setMsg({ bad: true, text: d.detail }); return; }
+    setMsg({
+      bad: false,
+      text:
+        decision === "passed"
+          ? (d.fidelity_alert
+              ? `⚠ 처치 오염 : ${d.fidelity_alert}\n(기록되었습니다. 연구자에게 알리세요.)`
+              : "통과. 학생 프롬프트가 그대로 전송되었습니다.")
+          : `되돌림 완료. 까닭 유형 : ${d.reason_type}` + (d.nudge ? "\n\n" + d.nudge : ""),
+    });
+    setSel(null); setTags({}); setReason("");
+    load();
+  };
+
+  const isControl = sel?.condition === "control";
+  const narrHint = reason.length > 0 && reason.length < 20;
+
+  return (
+    <div>
+      <div className="card row" style={{justifyContent:"space-between"}}>
+        <div><b>{classLabel}</b> <span className="muted">· 대기 {q.length}건 (5초마다 자동 갱신)</span></div>
+        <div className="row">
+          <button className="ghost" onClick={load}>새로고침</button>
+          <button className="ghost" onClick={onLogout}>로그아웃</button>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="row" style={{justifyContent:"space-between"}}>
+          <b>1차시 활동3 — 선생님의 자세한 질문으로 AI 답 만들기</b>
+          <button className="ghost" onClick={genTeacherAnswer}>AI 답 만들기</button>
+        </div>
+        <div className="muted" style={{margin:"4px 0"}}>
+          맥락을 담은 자세한 프롬프트를 넣어 AI 답을 만듭니다(학급 공유). 학생이 자기 조 답과 비교합니다.
+          1차시 판정 답은 각 조가 직접 만들고, 2~5차시 학생 질문은 아래 대기열로 옵니다.
+        </div>
+        <textarea value={taPrompt} onChange={e=>setTaPrompt(e.target.value)} />
+        {ta?.loading && <div className="muted" style={{marginTop:8}}>생성 중…</div>}
+        {ta?.error && <div className="hint" style={{marginTop:8}}>{ta.error}</div>}
+        {ta?.text && (
+          <div style={{marginTop:8}}>
+            <div className="muted">AI 답 (학생 화면 활동3에 나타납니다)</div>
+            <div className="prompt" style={{background:"#fff", border:"1px solid #cde8d5"}}>{ta.text}</div>
+          </div>
+        )}
+      </div>
+
+      {msg && (
+        <div className={"card " + (msg.bad ? "alert" : "ok")}>
+          <pre style={{margin:0, whiteSpace:"pre-wrap", font:"inherit"}}>{msg.text}</pre>
+          <button className="ghost" style={{marginTop:8}} onClick={()=>setMsg(null)}>닫기</button>
+        </div>
+      )}
+
+      {!sel && q.map(item => (
+        <div key={item.submission_id} className="card" onClick={()=>{setSel(item);setMsg(null);}} style={{cursor:"pointer"}}>
+          <div className="row" style={{justifyContent:"space-between"}}>
+            <b>{item.team_no}조 · {item.session_no}차시 · {item.version}판</b>
+            <span className="muted">
+              {item.condition === "treatment" ? "처치" : "통제"} · 되돌림 {item.return_count}회
+            </span>
+          </div>
+          <div className="prompt" style={{marginTop:8}}>{item.prompt}</div>
+        </div>
+      ))}
+
+      {sel && (
+        <div className="card">
+          <div className="row" style={{justifyContent:"space-between"}}>
+            <b>{sel.team_no}조 · {sel.session_no}차시 · {sel.version}판</b>
+            <button className="ghost" onClick={()=>setSel(null)}>목록으로</button>
+          </div>
+          <div className="prompt" style={{marginTop:10}}>{sel.prompt}</div>
+
+          {isControl ? (
+            <div className="card warn" style={{marginTop:14}}>
+              <b>통제 조건입니다.</b>
+              <div className="muted" style={{marginTop:6}}>
+                교육적 되돌림을 할 수 없습니다. 유해한 내용이 아니면 통과시킵니다.
+                통제 학급도 AI 응답을 받습니다 — 차이는 그것 하나뿐입니다.
+              </div>
+              <div className="row" style={{marginTop:12}}>
+                <button className="pass" onClick={()=>act("passed")}>통과</button>
+                <button className="block" onClick={()=>act("blocked")}>유해 차단</button>
+              </div>
+            </div>
+          ) : (
+            <div style={{marginTop:14}}>
+              <div className="muted">빠진 것 (되돌릴 때만){sel.session_no===2 && " · 2차시는 6개 태그"}</div>
+              <div className="tags">
+                {((sessCfg?.[sel.session_no] || {}).tags || []).map(({key, label, desc}) => (
+                  <span key={key} title={desc}
+                    className={"tag" + (tags[key] ? " on" : "")}
+                    onClick={()=>setTags({...tags, [key]: !tags[key]})}>{label}</span>
+                ))}
+              </div>
+
+              <div className="muted" style={{marginTop:10}}>
+                까닭 — <b>그 사람이 이 질문을 받으면 무슨 일이 일어나는지</b> 이야기로 써 주세요.
+              </div>
+              <textarea value={reason} onChange={e=>setReason(e.target.value)}
+                placeholder={"1학년이 이 포스터를 보면 '잔반율'에서 멈출 거예요. 그 아이는 그 말을 들어 본 적이 없거든요."} />
+              {narrHint && (
+                <div className="hint">
+                  {"✗ \"[대상]이 부족합니다.\"  ← 이렇게 쓰면 학생은 규칙만 외웁니다.\n○ \"1학년이 이 포스터를 보면 '잔반율'에서 멈출 거예요.\"  ← 이렇게 써 주세요.\n※ 고친 문장을 주지는 마세요. 그것은 학생의 몫입니다."}
+                </div>
+              )}
+
+              <div className="card warn" style={{marginTop:12, padding:12}}>
+                <b>할 수 있는 것은 두 가지뿐입니다 — 통과 / 되돌림.</b>
+                <div className="muted">학생의 질문을 대신 고칠 수 없습니다. 시도하면 기록됩니다.</div>
+              </div>
+
+              <div className="row" style={{marginTop:12}}>
+                <button className="pass" onClick={()=>act("passed")}>통과 (그대로 AI에 전송)</button>
+                <button className="return" onClick={()=>act("returned")}>되돌림</button>
+                <button className="block" onClick={()=>act("blocked")}>유해 차단</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────── 연구자 화면 ───────────
+function AdminView({ onLogout }) {
+  const [rows, setRows] = useState([]);
+  const [cfg, setCfg] = useState(null);
+  useEffect(() => {
+    fetch(`${API}/api/admin/fidelity`).then(r=>r.json()).then(setRows);
+    fetch(`${API}/api/admin/config`).then(r=>r.json()).then(setCfg);
+  }, []);
+  return (
+    <div>
+      <div className="row" style={{justifyContent:"flex-end", marginBottom:10}}>
+        <button className="ghost" onClick={onLogout}>처음으로</button>
+      </div>
+      {cfg && (
+        <div className={"card " + (cfg.warning ? "alert" : "ok")}>
+          <b>생성기 설정 (매 호출마다 로그에 남습니다)</b>
+          <table style={{marginTop:8}}>
+            <tbody>
+              <tr><th>생성기</th><td>{cfg.generator}</td></tr>
+              <tr><th>모델 (버전 고정)</th><td><code>{cfg.model}</code></td></tr>
+              <tr><th>temperature</th><td>{cfg.temperature}</td></tr>
+              <tr><th>시스템 프롬프트 해시</th><td><code>{cfg.system_prompt_hash}</code></td></tr>
+            </tbody>
+          </table>
+          {cfg.warning && <div className="hint">{cfg.warning}</div>}
+        </div>
+      )}
+      <div className="card">
+        <b>처치 충실도 — 학급별</b>
+        <div className="muted" style={{marginBottom:10}}>
+          서사형 비율이 낮은 학급은 처치가 전달되지 않은 것입니다.
+          모델 되묻기 비율과 불변식 위반은 <b>0이어야</b> 합니다.
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>학급</th><th>조건</th><th>제출</th><th>되돌림</th>
+              <th>평균 되돌림</th>
+              <th>★ 서사형 비율</th><th>정확성형</th>
+              <th>★ 모델 되묻기</th><th>★ 불변식 위반</th>
+              <th>사용 모델</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r,i)=>(
+              <tr key={i}>
+                <td>{r.classroom}</td>
+                <td>{r.condition === "treatment" ? "처치" : "통제"}</td>
+                <td>{r.submissions}</td>
+                <td>{r.returns}</td>
+                <td>{r.mean_return_count}</td>
+                <td>
+                  {r.narrative_reason_rate == null ? "—" :
+                    <span className={"badge " + (r.narrative_reason_rate >= 0.7 ? "b-narr" : "b-acc")}>
+                      {(r.narrative_reason_rate*100).toFixed(0)}%
+                    </span>}
+                </td>
+                <td>{r.accuracy_reason_count}</td>
+                <td>
+                  {r.model_asked_back_rate == null ? "—" :
+                    <span className={"badge " + (r.model_asked_back_rate === 0 ? "b-narr" : "b-acc")}>
+                      {(r.model_asked_back_rate*100).toFixed(1)}%
+                    </span>}
+                </td>
+                <td>
+                  <span className={"badge " + (r.invariant_violations === 0 ? "b-narr" : "b-acc")}>
+                    {r.invariant_violations}
+                  </span>
+                </td>
+                <td><code style={{fontSize:11}}>{(r.models_used||[]).join(", ") || "—"}</code></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ─────────── 차시 공통 헤더 ───────────
+function ModuleHeader({ sess, cfg, teamLabel, onLogout, right }) {
+  return (
+    <div className="card row" style={{justifyContent:"space-between", alignItems:"flex-start"}}>
+      <div>
+        <b>{teamLabel}</b> <span className="muted">· {sess}차시 · {cfg.title}</span>
+        <div className="muted" style={{marginTop:2}}>{cfg.question}</div>
+      </div>
+      <div className="row">
+        {right}
+        <button className="ghost" onClick={onLogout}>로그아웃</button>
+      </div>
+    </div>
+  );
+}
+
+// ─────────── 1차시 — AI 답 5개 판정표 ───────────
+function JudgeModule({ teamId, teamLabel, sess, cfg, onLogout }) {
+  const [data, setData] = useState(null);
+  const [edit, setEdit] = useState({});     // {index:{verdict,reason}}
+  const [msg, setMsg] = useState(null);
+  const [gen, setGen] = useState(false);
+  const [q, setQ] = useState("");        // 우리 조가 AI에게 물어볼 질문
+  const [compare, setCompare] = useState("");   // 활동3: 선생님 답과 비교
+  const VERD = [[1,"바로 쓸 수 있다"],[2,"우리 학교엔 안 맞다"],[3,"우리가 못 한다"]];
+
+  const load = async () => {
+    const r = await fetch(`${API}/api/team/${teamId}/judge`);
+    const d = await r.json(); setData(d);
+    setEdit(prev => {
+      const e = {...prev};
+      d.items.forEach(it => { if (!(it.index in e)) e[it.index] = {verdict: it.verdict, reason: it.reason || ""}; });
+      return e;
+    });
+    setCompare(prev => prev || d.compare || "");
+  };
+
+  const saveCompare = async () => {
+    await fetch(`${API}/api/team/note`, {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({team_id:Number(teamId), session_no:1, key:"compare", text:compare})});
+    load();
+  };
+  useEffect(() => { load(); const t=setInterval(load,5000); return ()=>clearInterval(t); }, [teamId]);
+
+  const save = async () => {
+    const verdicts = Object.entries(edit).filter(([,v])=>v.verdict)
+      .map(([i,v])=>({item_index:Number(i), verdict:v.verdict, reason:v.reason||""}));
+    if (!verdicts.length) { setMsg({bad:true, text:"판정을 하나 이상 골라 주세요."}); return; }
+    const r = await fetch(`${API}/api/team/judge`, {method:"POST",
+      headers:{"Content-Type":"application/json"}, body: JSON.stringify({team_id:Number(teamId), verdicts})});
+    const d = await r.json();
+    if (!r.ok) { setMsg({bad:true, text:d.detail}); return; }
+    setMsg({bad:false, text:`판정 ${d.saved}개를 저장했어요.`}); load();
+  };
+
+  const generate = async () => {
+    if (!q.trim()) return;
+    setGen(true);
+    const r = await fetch(`${API}/api/team/judge/generate`, {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({team_id:Number(teamId), prompt: q})});
+    if (!r.ok) { setMsg({bad:true, text:(await r.json()).detail}); }
+    setGen(false); load();
+  };
+
+  return (
+    <div>
+      <ModuleHeader sess={sess} cfg={cfg} teamLabel={teamLabel} onLogout={onLogout}
+        right={<button className="ghost" onClick={load}>새로고침</button>} />
+      {cfg.intro && <div className="card" style={{background:"#eef2f8"}}>{cfg.intro}</div>}
+      {!data ? <div className="card">불러오는 중…</div> : !data.ready ? (
+        <div className="card">
+          <b>활동 1 · AI에게 물어봐요</b>
+          <div className="muted" style={{margin:"6px 0"}}>
+            우리 조가 AI에게 물어볼 질문을 쓰세요. AI가 답 5개를 주면, 하나씩 판정합니다.
+          </div>
+          <textarea value={q} onChange={e=>setQ(e.target.value)}
+            placeholder="예: 급식 잔반을 줄이는 방법을 알려 줘." />
+          <div className="row" style={{marginTop:10}}>
+            <button className="primary" onClick={generate} disabled={gen || !q.trim()}>
+              {gen ? "물어보는 중…" : "AI에게 물어보기 (답 5개 받기)"}
+            </button>
+            <span className="muted">조원 누구나 보낼 수 있고, 답은 조 전체가 함께 봅니다.</span>
+          </div>
+          {msg?.bad && <div className="hint" style={{marginTop:8}}>{msg.text}</div>}
+        </div>
+      ) : (
+        <div className="card">
+          <b>활동 2 · AI 답을 판정해요</b>
+          <div className="muted" style={{marginTop:6}}>우리 조가 물어본 것</div>
+          <div className="prompt">{data.question}</div>
+          <div className="muted" style={{marginTop:10}}>AI가 준 답을 하나씩 판정하세요. ②·③에는 까닭을 씁니다.</div>
+          {data.items.map(it => (
+            <div key={it.index} style={{marginTop:12, borderTop:"1px dashed var(--line)", paddingTop:10}}>
+              <div><b>{it.index}.</b> {it.text}</div>
+              <div className="tags" style={{marginTop:8}}>
+                {VERD.map(([val,label]) => (
+                  <span key={val} className={"tag" + (edit[it.index]?.verdict===val ? " on":"")}
+                    onClick={()=>setEdit({...edit, [it.index]:{...edit[it.index], verdict:val}})}>{val} {label}</span>
+                ))}
+              </div>
+              {[2,3].includes(edit[it.index]?.verdict) && (
+                <input placeholder="왜 그렇게 판정했나요?" value={edit[it.index]?.reason||""}
+                  onChange={e=>setEdit({...edit, [it.index]:{...edit[it.index], reason:e.target.value}})}
+                  style={{width:"100%", marginTop:8, padding:8, border:"1px solid var(--line)", borderRadius:8, font:"inherit"}} />
+              )}
+            </div>
+          ))}
+          <div className="row" style={{marginTop:14}}>
+            <button className="primary" onClick={save}>판정 저장</button>
+            {msg && <span className="muted" style={msg.bad?{color:"var(--red)"}:{}}>{msg.text}</span>}
+          </div>
+        </div>
+      )}
+
+      {cfg.teacher_compare && (
+        <div className="card">
+          <b>활동 3 · 선생님의 질문과 비교해요</b>
+          {data?.teacher_answer ? (
+            <div style={{marginTop:8}}>
+              <div className="muted">선생님이 자세히 물어본 것</div>
+              <div className="prompt">{data.teacher_answer.prompt}</div>
+              <div className="muted" style={{marginTop:8}}>선생님이 받은 AI 답</div>
+              <div className="prompt" style={{background:"#fff", border:"1px solid #cde8d5"}}>{data.teacher_answer.text}</div>
+            </div>
+          ) : (
+            <div className="muted" style={{marginTop:6}}>아직 선생님이 활동3 답을 만들지 않았어요.</div>
+          )}
+          <div className="muted" style={{marginTop:10}}>
+            선생님 답과 우리 답이 어떻게 달랐나요? 왜 그랬을까요?
+          </div>
+          <textarea value={compare} onChange={e=>setCompare(e.target.value)}
+            placeholder="예: 선생님은 우리 반이 무엇을 남기는지 알려 줘서 우리 학교에 맞는 답이 왔어요." />
+          <div className="row" style={{marginTop:8}}>
+            <button className="primary" onClick={saveCompare} disabled={!compare.trim()}>비교 저장</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────── 6차시 — 스티커 역추적 (자기 태그) ───────────
+function RetraceModule({ teamId, teamLabel, sess, cfg, onLogout }) {
+  const [data, setData] = useState(null);
+  const [srcId, setSrcId] = useState(null);
+  const [tags, setTags] = useState({});
+  const [note, setNote] = useState("");
+  const [msg, setMsg] = useState(null);
+
+  const load = async () => {
+    const r = await fetch(`${API}/api/team/${teamId}/retrace`);
+    const d = await r.json(); setData(d);
+    if (d.sources.length && srcId==null) setSrcId(d.sources[0].version_id);
+  };
+  useEffect(() => { load(); const t=setInterval(load,5000); return ()=>clearInterval(t); }, [teamId]);
+
+  const save = async () => {
+    const r = await fetch(`${API}/api/team/retrace`, {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({team_id:Number(teamId), source_version_id: srcId, retrace_note: note, ...tags})});
+    const d = await r.json();
+    if (!r.ok) { setMsg({bad:true, text:d.detail}); return; }
+    setMsg({bad:false, text:"역추적을 저장했어요."}); setTags({}); setNote(""); load();
+  };
+  const cur = data?.sources.find(s=>s.version_id===srcId) || data?.sources[0];
+
+  return (
+    <div>
+      <ModuleHeader sess={sess} cfg={cfg} teamLabel={teamLabel} onLogout={onLogout} />
+      <div className="card">
+        <b>1) 우리 5차시 질문을 다시 읽어요</b>
+        {(!data || !data.sources.length) ? (
+          <div className="muted" style={{marginTop:6}}>5차시에 통과된 질문이 없어요. (5차시를 먼저 해야 합니다)</div>
+        ) : (
+          <div style={{marginTop:8}}>
+            {data.sources.length>1 && (
+              <select value={srcId||""} onChange={e=>setSrcId(Number(e.target.value))} style={{marginBottom:8}}>
+                {data.sources.map((s,i)=><option key={s.version_id} value={s.version_id}>질문 {i+1}</option>)}
+              </select>
+            )}
+            <div className="prompt">{cur?.prompt}</div>
+          </div>
+        )}
+      </div>
+      <div className="card">
+        <b>2) 스티커 결과를 단서로, 빠진 것에 스스로 태그를 붙여요</b>
+        <div className="tags" style={{marginTop:8}}>
+          {(cfg.tags||[]).map(({key,label,desc})=>(
+            <span key={key} title={desc} className={"tag"+(tags[key]?" on":"")}
+              onClick={()=>setTags({...tags,[key]:!tags[key]})}>{label}</span>
+          ))}
+        </div>
+        <div className="muted" style={{marginTop:10}}>3) 결과 → 질문 역추적을 한 줄로</div>
+        <textarea value={note} onChange={e=>setNote(e.target.value)}
+          placeholder="예: 1학년 복도에서만 스티커가 적었다 → [대상] 태그를 붙였지만 '잔반율'이라는 어려운 말을 그대로 썼다." />
+        <div className="row" style={{marginTop:10}}>
+          <button className="primary" onClick={save}>역추적 저장</button>
+          {msg && <span className="muted" style={msg.bad?{color:"var(--red)"}:{}}>{msg.text}</span>}
+        </div>
+      </div>
+      {data && data.saved.length>0 && (
+        <div className="card ok">
+          <b>우리가 적은 역추적</b>
+          {data.saved.map((r,i)=>(
+            <div key={i} style={{marginTop:8}}>
+              <div className="tags">{r.tags.map(t=><span key={t} className="tag shown">{t}</span>)}</div>
+              <div className="prompt" style={{background:"#fff"}}>{r.note}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────── 7차시 — 동료 판별 ───────────
+function PeerModule({ teamId, teamLabel, sess, cfg, onLogout }) {
+  const [data, setData] = useState(null);
+  const [sel, setSel] = useState(null);   // target version_id
+  const [tags, setTags] = useState({});
+  const [reason, setReason] = useState("");
+  const [msg, setMsg] = useState(null);
+
+  const load = async () => { const r=await fetch(`${API}/api/team/${teamId}/peer`); setData(await r.json()); };
+  useEffect(() => { load(); const t=setInterval(load,5000); return ()=>clearInterval(t); }, [teamId]);
+  const target = data?.targets.find(t=>t.version_id===sel);
+
+  const submit = async () => {
+    const r = await fetch(`${API}/api/team/peer-review`, {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({reviewer_team_id:Number(teamId), target_version_id: sel, reason, ...tags})});
+    const d = await r.json();
+    if (!r.ok) { setMsg({bad:true, text:d.detail}); return; }
+    setMsg({bad:false, text:`되돌렸어요. 까닭 유형: ${d.reason_type}`}); setSel(null); setTags({}); setReason(""); load();
+  };
+
+  return (
+    <div>
+      <ModuleHeader sess={sess} cfg={cfg} teamLabel={teamLabel} onLogout={onLogout}
+        right={<button className="ghost" onClick={load}>새로고침</button>} />
+      {msg && <div className={"card "+(msg.bad?"alert":"ok")}><span>{msg.text}</span>
+        <button className="ghost" style={{marginLeft:10}} onClick={()=>setMsg(null)}>닫기</button></div>}
+      {!sel ? (
+        <div className="card">
+          <b>다른 모둠의 질문 — 빠진 것을 찾아 태그를 붙여 주세요</b>
+          {(!data || !data.targets.length) ? (
+            <div className="muted" style={{marginTop:6}}>아직 판별할 다른 조 질문이 없어요.</div>
+          ) : data.targets.map(t=>(
+            <div key={t.version_id} className="card"
+              style={{marginTop:10, cursor: t.reviewed?"default":"pointer", opacity: t.reviewed?0.55:1}}
+              onClick={()=>{ if(!t.reviewed){ setSel(t.version_id); setMsg(null); } }}>
+              <div className="row" style={{justifyContent:"space-between"}}>
+                <b>{t.team_no}조</b>{t.reviewed && <span className="muted">되돌림 완료</span>}
+              </div>
+              <div className="prompt" style={{marginTop:6}}>{t.prompt}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="card">
+          <div className="row" style={{justifyContent:"space-between"}}>
+            <b>{target?.team_no}조 질문</b>
+            <button className="ghost" onClick={()=>setSel(null)}>목록으로</button>
+          </div>
+          <div className="prompt" style={{marginTop:8}}>{target?.prompt}</div>
+          <div className="muted" style={{marginTop:10}}>빠진 것 (탐지)</div>
+          <div className="tags">
+            {(cfg.tags||[]).map(({key,label,desc})=>(
+              <span key={key} title={desc} className={"tag"+(tags[key]?" on":"")}
+                onClick={()=>setTags({...tags,[key]:!tags[key]})}>{label}</span>
+            ))}
+          </div>
+          <div className="muted" style={{marginTop:10}}>까닭 (변별) — 그 사람이 이 질문을 받으면 무슨 일이 일어날지 이야기로</div>
+          <textarea value={reason} onChange={e=>setReason(e.target.value)}
+            placeholder="예: 1학년이 이 질문으로 만든 포스터를 보면 '잔반율'에서 멈출 거예요." />
+          <div className="row" style={{marginTop:10}}>
+            <button className="return" onClick={submit}>태그+까닭 붙여 되돌리기</button>
+          </div>
+        </div>
+      )}
+      {data && data.received.length>0 && (
+        <div className="card">
+          <b>친구들이 우리 질문에 붙여 준 것</b>
+          {data.received.map((r,i)=>(
+            <div key={i} style={{marginTop:8}}>
+              <div className="muted">{r.reviewer_no}조가</div>
+              <div className="tags">{r.tags.map(t=><span key={t} className="tag shown">{t}</span>)}</div>
+              <div className="prompt" style={{background:"#fff"}}>{r.reason}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────── 8차시 — 전이 (되돌림·AI·피드백 없음) ───────────
+function TransferModule({ teamId, teamLabel, sess, cfg, onLogout }) {
+  const [text, setText] = useState("");
+  const [data, setData] = useState(null);
+  const [msg, setMsg] = useState(null);
+
+  const load = async () => { const r=await fetch(`${API}/api/team/${teamId}/transfer`); setData(await r.json()); };
+  useEffect(() => { load(); }, [teamId]);
+
+  const send = async () => {
+    const r = await fetch(`${API}/api/team/transfer`, {method:"POST",
+      headers:{"Content-Type":"application/json"}, body: JSON.stringify({team_id:Number(teamId), prompt:text})});
+    if (!r.ok) { alert((await r.json()).detail); return; }
+    setText(""); setMsg("냈어요. 이 차시에는 되돌림도, AI 답도, 피드백도 없어요."); load();
+  };
+
+  return (
+    <div>
+      <ModuleHeader sess={sess} cfg={cfg} teamLabel={teamLabel} onLogout={onLogout} />
+      <div className="card">
+        <b>새 문제 — 우리 학교 전기 절약</b>
+        <div className="muted" style={{margin:"6px 0"}}>
+          도움 없이 혼자 써 봅니다. 되돌림·태그·자기점검란 없이, 네 요소를 갖춘 질문을 써 보세요.
+        </div>
+        <textarea value={text} onChange={e=>setText(e.target.value)}
+          placeholder="전기 절약을 위해 AI에게 무엇을 부탁할지, 우리 학교 상황을 담아 써 보세요." />
+        <div className="row" style={{marginTop:10}}>
+          <button className="primary" onClick={send} disabled={!text.trim()}>내기</button>
+          {msg && <span className="muted">{msg}</span>}
+        </div>
+      </div>
+      {data && data.prompts.length>0 && (
+        <div className="card ok">
+          <b>우리가 낸 질문</b>
+          {data.prompts.map((p,i)=><div key={i} className="prompt" style={{marginTop:8, background:"#fff"}}>{p.prompt}</div>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────── 2차시 활동3 — 통과 답 O/X 적합 판정 + 최종 선정 ───────────
+function ActivitySection({ teamId, sess }) {
+  const [data, setData] = useState(null);
+  const [edit, setEdit] = useState({});     // {idx:{fit,reason}}
+  const [final, setFinal] = useState("");
+  const [msg, setMsg] = useState(null);
+
+  const load = async () => {
+    const r = await fetch(`${API}/api/team/${teamId}/activity/${sess}`);
+    const d = await r.json(); setData(d);
+    setEdit(prev => {
+      const e = {...prev};
+      d.options.forEach(o => { if (!(o.idx in e)) e[o.idx] = {fit:o.fit, reason:o.reason||""}; });
+      return e;
+    });
+    setFinal(prev => prev || d.final || "");
+  };
+  useEffect(() => { load(); const t=setInterval(load,5000); return ()=>clearInterval(t); }, [teamId, sess]);
+
+  const saveOpt = async (idx) => {
+    const v = edit[idx] || {};
+    const r = await fetch(`${API}/api/team/activity/option`, {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({team_id:Number(teamId), session_no:Number(sess), idx,
+                            fit: (v.fit===undefined?null:v.fit), reason: v.reason||""})});
+    if (!r.ok) { setMsg((await r.json()).detail); return; }
+    setMsg(null); load();
+  };
+  const saveFinal = async () => {
+    await fetch(`${API}/api/team/note`, {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({team_id:Number(teamId), session_no:Number(sess), key:"final", text:final})});
+    load();
+  };
+
+  if (!data || !data.options.length) return (
+    <div className="card">
+      <b>활동 3 · 적합한 활동 고르기</b>
+      <div className="muted" style={{marginTop:6}}>질문이 통과되면 AI가 준 방법이 여기에 나타나요. 그때 O/X로 골라 봅니다.</div>
+    </div>
+  );
+  return (
+    <div className="card">
+      <b>활동 3 · AI가 준 방법 중 우리가 할 수 있는 것 고르기</b>
+      <div className="muted" style={{marginBottom:6}}>각 방법이 우리 학교·반에서 실제로 할 수 있는지 O(적합)/X로 고르고, X면 이유를 써요.</div>
+      {data.options.map(o => (
+        <div key={o.idx} style={{marginTop:10, borderTop:"1px dashed var(--line)", paddingTop:8}}>
+          <div><b>{o.idx}.</b> {o.text}</div>
+          <div className="tags" style={{marginTop:6}}>
+            {[["O",true],["X",false]].map(([lab,val]) => (
+              <span key={lab} className={"tag"+(edit[o.idx]?.fit===val?" on":"")}
+                onClick={()=>setEdit({...edit,[o.idx]:{...edit[o.idx],fit:val}})}>{lab}</span>
+            ))}
+          </div>
+          {edit[o.idx]?.fit===false && (
+            <input placeholder="왜 적합하지 않나요?" value={edit[o.idx]?.reason||""}
+              onChange={e=>setEdit({...edit,[o.idx]:{...edit[o.idx],reason:e.target.value}})}
+              style={{width:"100%",marginTop:6,padding:8,border:"1px solid var(--line)",borderRadius:8,font:"inherit"}} />
+          )}
+          <div><button className="ghost" style={{marginTop:6}} onClick={()=>saveOpt(o.idx)}>저장</button></div>
+        </div>
+      ))}
+      {msg && <div className="hint" style={{marginTop:8}}>{msg}</div>}
+      <div className="muted" style={{marginTop:14}}>최종적으로 선정한 활동</div>
+      <textarea value={final} onChange={e=>setFinal(e.target.value)} placeholder="우리 조가 실제로 할 활동을 적어요." />
+      <div><button className="primary" style={{marginTop:8}} onClick={saveFinal} disabled={!final.trim()}>최종 선정 저장</button></div>
+    </div>
+  );
+}
+
+// ─────────── 첫 화면 — 역할 선택 ───────────
+function Home({ go }) {
+  return (
+    <div>
+      <div className="muted" style={{margin:"4px 0 14px"}}>누구로 들어오나요?</div>
+      <div className="row" style={{gap:14, alignItems:"stretch"}}>
+        <div className="card loginpick" onClick={()=>go("studentLogin")}
+          style={{flex:1, cursor:"pointer", textAlign:"center", padding:"26px 18px"}}>
+          <div style={{fontSize:34}}>🧑‍🤝‍🧑</div>
+          <b style={{display:"block", margin:"6px 0"}}>학생 (조) 로그인</b>
+          <div className="muted">우리 조로 들어가 질문을 만들고, AI 대화를 조원과 함께 봅니다.</div>
+        </div>
+        <div className="card loginpick" onClick={()=>go("teacherLogin")}
+          style={{flex:1, cursor:"pointer", textAlign:"center", padding:"26px 18px"}}>
+          <div style={{fontSize:34}}>🧑‍🏫</div>
+          <b style={{display:"block", margin:"6px 0"}}>교사 로그인</b>
+          <div className="muted">우리 반 대기열을 보고 통과 / 되돌림을 결정합니다.</div>
+        </div>
+      </div>
+      <div style={{marginTop:16, textAlign:"center"}}>
+        <button className="ghost" onClick={()=>go("admin")}>연구자 화면</button>
+      </div>
+    </div>
+  );
+}
+
+// ─────────── 학생(조) 로그인 ───────────
+function StudentLogin({ sessCfg, onEnter, onBack }) {
+  const [classes, setClasses] = useState([]);
+  const [teamId, setTeamId] = useState("");
+  const [sess, setSess] = useState(1);
+  const sessions = Object.values(sessCfg).sort((a,b)=>a.no-b.no);
+  useEffect(() => {
+    fetch(`${API}/api/classrooms`).then(r=>r.json()).then(cs => {
+      setClasses(cs);
+      const first = cs.find(c => c.teams.length);
+      if (first) setTeamId(String(first.teams[0].team_id));
+    });
+  }, []);
+  const labelFor = (tid) => {
+    for (const c of classes)
+      for (const t of c.teams)
+        if (String(t.team_id) === String(tid)) return `${c.school} ${c.name} · ${t.number}조`;
+    return "";
+  };
+  const enter = () => { if (teamId) onEnter({ teamId, teamLabel: labelFor(teamId), sess: Number(sess) }); };
+  return (
+    <div className="card" style={{maxWidth:480}}>
+      <b>학생 (조) 로그인</b>
+      <div className="muted" style={{margin:"6px 0 14px"}}>우리 조와 차시를 고르세요.</div>
+      <label style={{display:"block", marginBottom:12}}>조<br/>
+        <select value={teamId} onChange={e=>setTeamId(e.target.value)} style={{width:"100%", marginTop:4}}>
+          {classes.map(c => (
+            <optgroup key={c.classroom_id}
+              label={`${c.school} ${c.name} (${c.condition === "treatment" ? "처치" : "통제"})`}>
+              {c.teams.map(t => (
+                <option key={t.team_id} value={t.team_id}>{c.school} {c.name} · {t.number}조</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      </label>
+      <label style={{display:"block", marginBottom:16}}>차시<br/>
+        <select value={sess} onChange={e=>setSess(Number(e.target.value))} style={{width:"100%", marginTop:4}}>
+          {sessions.length === 0 && <option value={1}>불러오는 중…</option>}
+          {sessions.map(sc => (
+            <option key={sc.no} value={sc.no}>{sc.no}차시 · {sc.title}</option>
+          ))}
+        </select>
+      </label>
+      <div className="row">
+        <button className="primary" onClick={enter} disabled={!teamId}>입장하기</button>
+        <button className="ghost" onClick={onBack}>처음으로</button>
+      </div>
+    </div>
+  );
+}
+
+// ─────────── 교사 로그인 ───────────
+function TeacherLogin({ onEnter, onBack }) {
+  const [classes, setClasses] = useState([]);
+  const [cid, setCid] = useState("");
+  useEffect(() => {
+    fetch(`${API}/api/classrooms`).then(r=>r.json()).then(cs => {
+      setClasses(cs);
+      if (cs.length) setCid(String(cs[0].classroom_id));
+    });
+  }, []);
+  const labelFor = (id) => {
+    const c = classes.find(c => String(c.classroom_id) === String(id));
+    return c ? `${c.school} ${c.name} (${c.condition === "treatment" ? "처치" : "통제"})` : "";
+  };
+  const enter = () => { if (cid) onEnter({ classroomId: Number(cid), classLabel: labelFor(cid) }); };
+  return (
+    <div className="card" style={{maxWidth:480}}>
+      <b>교사 로그인</b>
+      <div className="muted" style={{margin:"6px 0 14px"}}>담당 학급을 고르세요.</div>
+      <label style={{display:"block", marginBottom:16}}>학급<br/>
+        <select value={cid} onChange={e=>setCid(e.target.value)} style={{width:"100%", marginTop:4}}>
+          {classes.map(c => (
+            <option key={c.classroom_id} value={c.classroom_id}>
+              {c.school} {c.name} ({c.condition === "treatment" ? "처치" : "통제"})
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="row">
+        <button className="primary" onClick={enter} disabled={!cid}>입장하기</button>
+        <button className="ghost" onClick={onBack}>처음으로</button>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [screen, setScreen] = useState("home");   // home | studentLogin | teacherLogin | team | teacher | admin
+  const [creds, setCreds] = useState({});
+  const [sessCfg, setSessCfg] = useState({});     // {no: {mode,title,question,placeholder,selfcheck}}
+  useEffect(() => {
+    fetch(`${API}/api/config/sessions`).then(r=>r.json()).then(d=>{
+      const m = {}; d.sessions.forEach(sc => m[sc.no] = sc); setSessCfg(m);
+    });
+  }, []);
+  const home = () => { setCreds({}); setScreen("home"); };
+
+  // 차시가 기능을 고정한다 — 로그인에서 고른 차시의 모드로 화면을 라우팅
+  const studentModule = () => {
+    const cfg = sessCfg[creds.sess] || {};
+    const p = { ...creds, cfg, onLogout: home };
+    switch (cfg.mode) {
+      case "judge":    return <JudgeModule {...p} />;
+      case "retrace":  return <RetraceModule {...p} />;
+      case "peer":     return <PeerModule {...p} />;
+      case "transfer": return <TransferModule {...p} />;
+      case "loop":     return <TeamView {...p} />;
+      default:         return <div className="card">차시 설정을 불러오는 중…</div>;
+    }
+  };
+
+  return (
+    <div className="wrap">
+      <h1>prompt-gate</h1>
+      <div className="sub">되돌림 루프 — 차시마다 다른 활동이 켜집니다.</div>
+      {screen === "home"         && <Home go={setScreen} />}
+      {screen === "studentLogin" && <StudentLogin sessCfg={sessCfg} onBack={home} onEnter={c=>{setCreds(c); setScreen("team");}} />}
+      {screen === "teacherLogin" && <TeacherLogin onBack={home} onEnter={c=>{setCreds(c); setScreen("teacher");}} />}
+      {screen === "team"         && studentModule()}
+      {screen === "teacher"      && <TeacherView {...creds} sessCfg={sessCfg} onLogout={home} />}
+      {screen === "admin"        && <AdminView onLogout={home} />}
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
