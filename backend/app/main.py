@@ -1236,13 +1236,14 @@ _TAG_KO = [("tag_purpose", "목적"), ("tag_situation", "상황"), ("tag_audienc
            ("tag_condition", "조건"), ("tag_role", "역할"), ("tag_example", "예시")]
 
 
-def _collect_rows(s: Session) -> list[dict]:
+def _collect_rows(s: Session, classroom_id: int | None = None) -> list[dict]:
     tmap, cmap = {}, {}
     for t, cr in s.execute(
         select(Team, Classroom).join(Classroom, Classroom.id == Team.classroom_id)
     ).all():
         tmap[t.id] = (cr.name, t.number)
         cmap[cr.id] = cr.name
+    only_name = cmap.get(classroom_id) if classroom_id is not None else None
     rows: list[dict] = []
 
     def add(team_id, session, kind, detail, value):
@@ -1294,8 +1295,27 @@ def _collect_rows(s: Session) -> list[dict]:
             rows.append({"classroom": nm, "team": "-", "session": 1,
                          "kind": "교사답(활동3)", "detail": det, "value": (val or "").strip()})
 
-    rows.sort(key=lambda r: (str(r["classroom"]), str(r["team"]), r["session"], r["kind"]))
+    if only_name is not None:
+        rows = [r for r in rows if str(r["classroom"]) == str(only_name)]
+    rows.sort(key=lambda r: (str(r["classroom"]), _team_sort(r["team"]), r["session"], r["kind"]))
     return rows
+
+
+def _team_sort(team):
+    try:
+        return (0, int(team))
+    except (ValueError, TypeError):
+        return (1, 0)   # 교사답('-') 등은 뒤로
+
+
+@app.get("/api/teacher/responses/{classroom_id}")
+def teacher_responses(classroom_id: int, s: Session = Depends(db)):
+    """교사용: 자기 학급 학생 응답을 활동별로 실시간 확인한다."""
+    cr = s.get(Classroom, classroom_id)
+    if not cr:
+        raise HTTPException(404, "없는 학급")
+    rows = _collect_rows(s, classroom_id)
+    return {"count": len(rows), "rows": rows}
 
 
 @app.get("/api/admin/collect")

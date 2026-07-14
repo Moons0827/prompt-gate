@@ -215,6 +215,7 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
   const [taPrompt, setTaPrompt] = useState(DEFAULT_TA);
   const [ta, setTa] = useState(null);
   const [jq, setJq] = useState([]);
+  const [resp, setResp] = useState([]);   // 학생 응답 실시간
 
   const load = async () => {
     const r = await fetch(`${API}/api/teacher/queue/${classroomId}`);
@@ -226,6 +227,8 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
     if (r3.ok) { const d = await r3.json();
       setTa(prev => (prev && prev.loading) ? prev
         : (d.exists ? {text:d.text, prompt:d.prompt, published:d.published} : null)); }
+    const r4 = await fetch(`${API}/api/teacher/responses/${classroomId}`);
+    if (r4.ok) setResp((await r4.json()).rows || []);
   };
   useEffect(() => { load(); const t = setInterval(load, 5000); return () => clearInterval(t); }, [classroomId]);
 
@@ -359,6 +362,37 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
             </div>
           ))
         )}
+      </div>
+
+      <div className="card">
+        <b>학생 응답 실시간 — 활동별</b>
+        <div className="muted" style={{margin:"4px 0"}}>
+          각 조가 활동에서 답한 내용입니다. (5초마다 자동 갱신)
+        </div>
+        {(() => {
+          const students = resp.filter(r => r.team !== "-");
+          if (students.length === 0)
+            return <div className="muted" style={{marginTop:8}}>아직 응답이 없습니다.</div>;
+          const teamNos = [...new Set(students.map(r => r.team))].sort((a,b)=>Number(a)-Number(b));
+          return teamNos.map(tn => (
+            <div key={tn} style={{marginTop:12, borderTop:"1px dashed var(--line)", paddingTop:8}}>
+              <b>{tn}조</b>
+              <div style={{marginTop:6, overflowX:"auto"}}>
+                <table style={{width:"100%", fontSize:13}}>
+                  <tbody>
+                    {students.filter(r => r.team === tn).map((r,i) => (
+                      <tr key={i}>
+                        <td style={{whiteSpace:"nowrap", color:"var(--muted)"}}>{r.session}차시</td>
+                        <td style={{whiteSpace:"nowrap"}}>{r.kind}{r.detail?` ${r.detail}`:""}</td>
+                        <td style={{textAlign:"left", whiteSpace:"pre-wrap"}}>{r.value}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ));
+        })()}
       </div>
 
       {msg && (
