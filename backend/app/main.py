@@ -993,7 +993,7 @@ def fidelity(s: Session = Depends(db)):
         hashes = sorted({r.system_prompt_hash for r in responses})
         out.append(
             {
-                "classroom": f"{cr.school} {cr.name}",
+                "classroom": f"{cr.school} {cr.name}".strip() + "학급",
                 "condition": cr.condition.value,
                 "submissions": len(subs),
                 "returns": len(reviews),
@@ -1037,6 +1037,29 @@ def config():
             else ""
         ),
     }
+
+
+class ResetIn(BaseModel):
+    code: str
+
+
+@app.post("/api/admin/reset")
+def admin_reset(body: ResetIn, s: Session = Depends(db)):
+    """활동 데이터(제출·판정·대화·이벤트 등)를 전부 지운다. 학급·조는 남긴다.
+
+    공개 주소이므로 코드가 맞아야만 실행한다(RESET_CODE).
+    """
+    if body.code != settings.RESET_CODE:
+        raise HTTPException(403, "초기화 코드가 틀렸습니다.")
+    # 자식 → 부모 순서로 지운다(학급/조는 남긴다)
+    for model in (
+        AIResponse, Review, PromptVersion, Submission,
+        Judgment, JudgeItem, RetraceTag, PeerReview, TransferPrompt,
+        TeacherAnswer, ActivityOption, TeamNote, Event,
+    ):
+        s.query(model).delete()
+    s.commit()
+    return {"ok": True}
 
 
 @app.get("/api/health")

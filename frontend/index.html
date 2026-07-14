@@ -62,6 +62,9 @@ const API = window.API_BASE
 
 const STATUS_LABEL = { pending:"검토 중", returned:"돌아옴", passed:"통과", blocked:"차단" };
 
+// 학급 표시명 (school 이 비어도 깔끔하게)
+const cn = c => `${c.school || ""} ${c.name}`.trim();
+
 // ─────────── 조 화면 (같은 조원이 공유) ───────────
 function TeamView({ teamId, teamLabel, sess, cfg, onLogout }) {
   const [text, setText] = useState("");
@@ -346,15 +349,35 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
 function AdminView({ onLogout }) {
   const [rows, setRows] = useState([]);
   const [cfg, setCfg] = useState(null);
-  useEffect(() => {
+  const [msg, setMsg] = useState(null);
+  const load = () => {
     fetch(`${API}/api/admin/fidelity`).then(r=>r.json()).then(setRows);
     fetch(`${API}/api/admin/config`).then(r=>r.json()).then(setCfg);
-  }, []);
+  };
+  useEffect(() => { load(); }, []);
+
+  const reset = async () => {
+    if (!confirm("모든 활동 데이터(제출·판정·대화·기록)를 지웁니다. 학급·조는 남습니다.\n정말 초기화할까요?")) return;
+    const code = prompt("초기화 코드를 입력하세요:");
+    if (code == null) return;
+    const r = await fetch(`${API}/api/admin/reset`, {method:"POST",
+      headers:{"Content-Type":"application/json"}, body: JSON.stringify({code})});
+    if (!r.ok) { setMsg({bad:true, text:(await r.json()).detail}); return; }
+    setMsg({bad:false, text:"초기화 완료. 모든 조의 활동 데이터가 지워졌습니다."}); load();
+  };
+
   return (
     <div>
-      <div className="row" style={{justifyContent:"flex-end", marginBottom:10}}>
+      <div className="row" style={{justifyContent:"space-between", marginBottom:10}}>
+        <button className="block" onClick={reset}>초기화 (활동 데이터 삭제)</button>
         <button className="ghost" onClick={onLogout}>처음으로</button>
       </div>
+      {msg && (
+        <div className={"card " + (msg.bad ? "alert" : "ok")}>
+          <span>{msg.text}</span>
+          <button className="ghost" style={{marginLeft:10}} onClick={()=>setMsg(null)}>닫기</button>
+        </div>
+      )}
       {cfg && (
         <div className={"card " + (cfg.warning ? "alert" : "ok")}>
           <b>생성기 설정 (매 호출마다 로그에 남습니다)</b>
@@ -857,36 +880,37 @@ function Home({ go }) {
 }
 
 // ─────────── 학생(조) 로그인 ───────────
-function StudentLogin({ sessCfg, onEnter, onBack }) {
+function StudentLogin({ sessCfg, presetClass, onEnter, onBack }) {
   const [classes, setClasses] = useState([]);
   const [teamId, setTeamId] = useState("");
   const [sess, setSess] = useState(1);
   const sessions = Object.values(sessCfg).sort((a,b)=>a.no-b.no);
   useEffect(() => {
     fetch(`${API}/api/classrooms`).then(r=>r.json()).then(cs => {
-      setClasses(cs);
-      const first = cs.find(c => c.teams.length);
+      // 딥링크(?s=N)면 그 학급만 보여 준다
+      const filtered = presetClass ? cs.filter(c => String(c.name) === String(presetClass)) : cs;
+      setClasses(filtered);
+      const first = filtered.find(c => c.teams.length);
       if (first) setTeamId(String(first.teams[0].team_id));
     });
   }, []);
   const labelFor = (tid) => {
     for (const c of classes)
       for (const t of c.teams)
-        if (String(t.team_id) === String(tid)) return `${c.school} ${c.name} · ${t.number}조`;
+        if (String(t.team_id) === String(tid)) return `${cn(c)} · ${t.number}조`;
     return "";
   };
   const enter = () => { if (teamId) onEnter({ teamId, teamLabel: labelFor(teamId), sess: Number(sess) }); };
   return (
     <div className="card" style={{maxWidth:480}}>
-      <b>학생 (조) 로그인</b>
+      <b>학생 (조) 로그인{presetClass ? ` — ${presetClass}학급` : ""}</b>
       <div className="muted" style={{margin:"6px 0 14px"}}>우리 조와 차시를 고르세요.</div>
       <label style={{display:"block", marginBottom:12}}>조<br/>
         <select value={teamId} onChange={e=>setTeamId(e.target.value)} style={{width:"100%", marginTop:4}}>
           {classes.map(c => (
-            <optgroup key={c.classroom_id}
-              label={`${c.school} ${c.name} (${c.condition === "treatment" ? "처치" : "통제"})`}>
+            <optgroup key={c.classroom_id} label={`${cn(c)}학급`}>
               {c.teams.map(t => (
-                <option key={t.team_id} value={t.team_id}>{c.school} {c.name} · {t.number}조</option>
+                <option key={t.team_id} value={t.team_id}>{cn(c)}학급 · {t.number}조</option>
               ))}
             </optgroup>
           ))}
@@ -920,7 +944,7 @@ function TeacherLogin({ onEnter, onBack }) {
   }, []);
   const labelFor = (id) => {
     const c = classes.find(c => String(c.classroom_id) === String(id));
-    return c ? `${c.school} ${c.name} (${c.condition === "treatment" ? "처치" : "통제"})` : "";
+    return c ? `${cn(c)}학급` : "";
   };
   const enter = () => { if (cid) onEnter({ classroomId: Number(cid), classLabel: labelFor(cid) }); };
   return (
@@ -930,9 +954,7 @@ function TeacherLogin({ onEnter, onBack }) {
       <label style={{display:"block", marginBottom:16}}>학급<br/>
         <select value={cid} onChange={e=>setCid(e.target.value)} style={{width:"100%", marginTop:4}}>
           {classes.map(c => (
-            <option key={c.classroom_id} value={c.classroom_id}>
-              {c.school} {c.name} ({c.condition === "treatment" ? "처치" : "통제"})
-            </option>
+            <option key={c.classroom_id} value={c.classroom_id}>{cn(c)}학급</option>
           ))}
         </select>
       </label>
@@ -948,12 +970,26 @@ function App() {
   const [screen, setScreen] = useState("home");   // home | studentLogin | teacherLogin | team | teacher | admin
   const [creds, setCreds] = useState({});
   const [sessCfg, setSessCfg] = useState({});     // {no: {mode,title,question,placeholder,selfcheck}}
+  const [presetClass, setPresetClass] = useState(null);  // ?s=N 학생 딥링크의 학급
   useEffect(() => {
     fetch(`${API}/api/config/sessions`).then(r=>r.json()).then(d=>{
       const m = {}; d.sessions.forEach(sc => m[sc.no] = sc); setSessCfg(m);
     });
+    // 딥링크: ?t=1 (1학급 교사) / ?s=1 (1학급 학생)
+    const q = new URLSearchParams(location.search);
+    const t = q.get("t"), s = q.get("s");
+    if (t || s) {
+      fetch(`${API}/api/classrooms`).then(r=>r.json()).then(cs => {
+        if (t) {
+          const c = cs.find(x => String(x.name) === String(t));
+          if (c) { setCreds({ classroomId: c.classroom_id, classLabel: `${cn(c)}학급` }); setScreen("teacher"); }
+        } else if (s) {
+          setPresetClass(s); setScreen("studentLogin");
+        }
+      });
+    }
   }, []);
-  const home = () => { setCreds({}); setScreen("home"); };
+  const home = () => { setCreds({}); setPresetClass(null); setScreen("home"); };
 
   // 차시가 기능을 고정한다 — 로그인에서 고른 차시의 모드로 화면을 라우팅
   const studentModule = () => {
@@ -974,7 +1010,7 @@ function App() {
       <h1>prompt-gate</h1>
       <div className="sub">되돌림 루프 — 차시마다 다른 활동이 켜집니다.</div>
       {screen === "home"         && <Home go={setScreen} />}
-      {screen === "studentLogin" && <StudentLogin sessCfg={sessCfg} onBack={home} onEnter={c=>{setCreds(c); setScreen("team");}} />}
+      {screen === "studentLogin" && <StudentLogin sessCfg={sessCfg} presetClass={presetClass} onBack={home} onEnter={c=>{setCreds(c); setScreen("team");}} />}
       {screen === "teacherLogin" && <TeacherLogin onBack={home} onEnter={c=>{setCreds(c); setScreen("teacher");}} />}
       {screen === "team"         && studentModule()}
       {screen === "teacher"      && <TeacherView {...creds} sessCfg={sessCfg} onLogout={home} />}

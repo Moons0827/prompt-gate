@@ -23,6 +23,9 @@ class Settings(BaseSettings):
 
     TEMPERATURE: float = 0.0       # 재현성을 위해 0 고정
     MAX_TOKENS: int = 600
+
+    # 초기화(활동 데이터 삭제) 시 요구하는 코드. 배포 시 env 로 바꿀 수 있다.
+    RESET_CODE: str = "reset"
     TIMEOUT_S: float = 30.0
 
     DB_URL: str = "sqlite:///./promptgate.db"

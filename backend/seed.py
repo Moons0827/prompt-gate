@@ -12,13 +12,12 @@ s = SessionLocal()
 
 TEAMS_PER_CLASS = 6
 
+# 학급 1·2·3·4 (school 은 비운다). 모두 처치 조건 — 전체 되돌림 루프가 켜진다.
 PLAN = [
-    ("불곡초", "5-1", Condition.TREATMENT),
-    ("불곡초", "5-2", Condition.CONTROL),
-    ("불곡초", "6-1", Condition.TREATMENT),
-    ("○○초", "5-1", Condition.CONTROL),
-    ("○○초", "6-1", Condition.TREATMENT),
-    ("○○초", "6-2", Condition.CONTROL),
+    ("", "1", Condition.TREATMENT),
+    ("", "2", Condition.TREATMENT),
+    ("", "3", Condition.TREATMENT),
+    ("", "4", Condition.TREATMENT),
 ]
 
 if s.query(Classroom).count() == 0:
