@@ -995,9 +995,14 @@ function App() {
     fetch(`${API}/api/config/sessions`).then(r=>r.json()).then(d=>{
       const m = {}; d.sessions.forEach(sc => m[sc.no] = sc); setSessCfg(m);
     });
-    // 딥링크: ?t=1 (1학급 교사) / ?s=1 (1학급 학생)
+    // 주소로 바로 로그인 화면 열기
+    //  ?role=teacher → 교사 로그인 / ?role=student → 학생 로그인
+    //  ?t=1 → 1학급 교사 바로 입장 / ?s=1 → 1학급 학생 로그인
     const q = new URLSearchParams(location.search);
+    const role = q.get("role");
     const t = q.get("t"), s = q.get("s");
+    if (role === "teacher" || t === "") { setScreen("teacherLogin"); return; }
+    if (role === "student" || s === "") { setScreen("studentLogin"); return; }
     if (t || s) {
       fetch(`${API}/api/classrooms`).then(r=>r.json()).then(cs => {
         if (t) {
