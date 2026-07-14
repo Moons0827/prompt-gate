@@ -21,22 +21,26 @@ class AnthropicGenerator(Generator):
         api_key = settings.ANTHROPIC_API_KEY.strip().strip('"').strip("'").strip()
         if not api_key:
             raise RuntimeError("ANTHROPIC_API_KEY 가 비어 있다.")
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "max_tokens": settings.MAX_TOKENS,
+            "temperature": self.temperature,
+            "system": SYSTEM_PROMPT,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        url = "https://api.anthropic.com/v1/messages"
         async with httpx.AsyncClient(timeout=settings.TIMEOUT_S) as client:
-            r = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": self.model,
-                    "max_tokens": settings.MAX_TOKENS,
-                    "temperature": self.temperature,
-                    "system": SYSTEM_PROMPT,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-            )
+            r = await client.post(url, headers=headers, json=payload)
+            # 최신 모델은 temperature 를 받지 않는다("deprecated for this model").
+            # 그 경우 temperature 를 빼고 한 번 더 호출한다 — 모델을 바꿔도 안 깨진다.
+            if r.status_code == 400 and "temperature" in r.text:
+                payload.pop("temperature", None)
+                r = await client.post(url, headers=headers, json=payload)
             if r.status_code >= 400:
                 raise RuntimeError(f"Anthropic {r.status_code}: {r.text[:300]}")
             data = r.json()

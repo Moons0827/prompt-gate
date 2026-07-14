@@ -11,8 +11,10 @@ services:
       # 비밀 아님 — 여기에 고정한다(재현성). 모델을 바꾸려면 이 값을 고치고 push.
       - key: GENERATOR
         value: anthropic
+      # sonnet-5 는 temperature 를 안 받아 재현성(temp=0)이 깨진다.
+      # sonnet-4-6 은 temperature=0 을 지원한다(고정 스냅샷, 'latest' 아님).
       - key: ANTHROPIC_MODEL
-        value: claude-sonnet-5
+        value: claude-sonnet-4-6
       - key: TEMPERATURE
         value: "0.0"
       - key: MAX_TOKENS
