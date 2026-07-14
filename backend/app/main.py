@@ -1039,6 +1039,17 @@ def config():
     }
 
 
+@app.get("/api/admin/ping")
+async def admin_ping():
+    """실제 AI를 아주 짧게 호출해 키가 먹히는지만 확인한다(DB 저장 없음).
+
+    ok:true 면 키·모델 정상. ok:false 면 error 에 원인(예: 401 invalid x-api-key)."""
+    gen = get_generator()
+    g = await gen.generate("안녕")
+    return {"ok": g.ok, "provider": g.provider, "model": g.model,
+            "error": (g.error or "")[:300], "sample": (g.text or "")[:80]}
+
+
 class ResetIn(BaseModel):
     code: str
 
