@@ -1150,6 +1150,59 @@ def teacher_reset(classroom_id: int, body: ResetIn, s: Session = Depends(db)):
     return {"ok": True}
 
 
+@app.post("/api/teacher/reset/{classroom_id}/{session_no}")
+def teacher_reset_session(classroom_id: int, session_no: int,
+                          body: ResetIn, s: Session = Depends(db)):
+    """한 학급의 '한 차시' 활동 데이터만 초기화한다.
+
+    다른 차시·다른 학급은 그대로 둔다. 교사용. 코드가 맞아야 실행한다."""
+    if body.code != settings.RESET_CODE:
+        raise HTTPException(403, "초기화 코드가 틀렸습니다.")
+    cr = s.get(Classroom, classroom_id)
+    if not cr:
+        raise HTTPException(404, "없는 학급")
+
+    team_ids = list(s.scalars(select(Team.id).where(Team.classroom_id == classroom_id)))
+
+    def wipe(model, *conds):
+        s.query(model).filter(*conds).delete(synchronize_session=False)
+
+    if team_ids:
+        # 되돌림 루프(제출 기반, 2~5차시) — session_no 로 필터
+        sub_ids = list(s.scalars(select(Submission.id).where(
+            Submission.team_id.in_(team_ids), Submission.session_no == session_no)))
+        ver_ids = list(s.scalars(select(PromptVersion.id).where(
+            PromptVersion.submission_id.in_(sub_ids)))) if sub_ids else []
+        if ver_ids:
+            wipe(AIResponse, AIResponse.version_id.in_(ver_ids))
+            wipe(Review, Review.version_id.in_(ver_ids))
+            wipe(PeerReview, PeerReview.target_version_id.in_(ver_ids))
+            wipe(RetraceTag, RetraceTag.source_version_id.in_(ver_ids))
+            wipe(PromptVersion, PromptVersion.id.in_(ver_ids))
+        if sub_ids:
+            wipe(Event, Event.submission_id.in_(sub_ids))
+            wipe(Submission, Submission.id.in_(sub_ids))
+        # session_no 가 붙는 활동 데이터
+        wipe(ActivityOption, ActivityOption.team_id.in_(team_ids),
+             ActivityOption.session_no == session_no)
+        wipe(TeamNote, TeamNote.team_id.in_(team_ids),
+             TeamNote.session_no == session_no)
+        # 차시 고유 활동 (session_no 필드가 없는 것들)
+        if session_no == 1:
+            wipe(JudgeItem, JudgeItem.team_id.in_(team_ids))
+            wipe(Judgment, Judgment.team_id.in_(team_ids))
+        elif session_no == 6:
+            wipe(RetraceTag, RetraceTag.team_id.in_(team_ids))
+        elif session_no == 7:
+            wipe(PeerReview, PeerReview.reviewer_team_id.in_(team_ids))
+        elif session_no == 8:
+            wipe(TransferPrompt, TransferPrompt.team_id.in_(team_ids))
+    if session_no == 1:  # 1차시 활동3 교사 답(학급 공유)
+        wipe(TeacherAnswer, TeacherAnswer.classroom_id == classroom_id)
+    s.commit()
+    return {"ok": True}
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True}

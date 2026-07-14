@@ -246,17 +246,19 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
     load();
   };
 
-  const resetClass = async () => {
-    if (!confirm(`${classLabel}의 활동 데이터(조별 답변·판정·조사·대화·기록)를 모두 지웁니다.\n조 구성은 그대로 남습니다. 다른 학급은 영향 없습니다.\n\n정말 초기화할까요?`)) return;
+  const [resetSess, setResetSess] = useState(1);
+  const resetSession = async () => {
+    const sc = sessCfg?.[resetSess] || {};
+    if (!confirm(`${classLabel} · ${resetSess}차시(${sc.title||""}) 활동 데이터만 지웁니다.\n다른 차시와 다른 학급은 그대로예요. 조 구성도 남습니다.\n\n정말 초기화할까요?`)) return;
     const code = prompt("초기화 코드를 입력하세요.");
     if (code == null) return;
-    const r = await fetch(`${API}/api/teacher/reset/${classroomId}`, {
+    const r = await fetch(`${API}/api/teacher/reset/${classroomId}/${resetSess}`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code }),
     });
     const d = await r.json().catch(()=>({}));
     if (!r.ok) { setMsg({ bad: true, text: d.detail || "초기화 실패" }); return; }
-    setMsg({ bad: false, text: `${classLabel} 초기화 완료. 학생이 새로 시작할 수 있습니다.` });
+    setMsg({ bad: false, text: `${resetSess}차시 초기화 완료. 학생이 새로 시작할 수 있습니다.` });
     setSel(null); load();
   };
 
@@ -269,8 +271,23 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
         <div><b>{classLabel}</b> <span className="muted">· 대기 {q.length}건 (5초마다 자동 갱신)</span></div>
         <div className="row">
           <button className="ghost" onClick={load}>새로고침</button>
-          <button className="block" onClick={resetClass}>학급 초기화</button>
           <button className="ghost" onClick={onLogout}>로그아웃</button>
+        </div>
+      </div>
+
+      <div className="card">
+        <b>차시별 초기화</b>
+        <div className="muted" style={{margin:"4px 0"}}>
+          고른 차시의 이 학급 활동 데이터만 지웁니다. 다른 차시·다른 학급·조 구성은 그대로예요. (코드 필요)
+        </div>
+        <div className="row" style={{marginTop:6}}>
+          <select value={resetSess} onChange={e=>setResetSess(Number(e.target.value))}
+            style={{padding:8, borderRadius:8, border:"1px solid var(--line)", font:"inherit"}}>
+            {Object.values(sessCfg||{}).sort((a,b)=>a.no-b.no).map(sc => (
+              <option key={sc.no} value={sc.no}>{sc.no}차시 · {sc.title}</option>
+            ))}
+          </select>
+          <button className="block" onClick={resetSession}>이 차시 초기화</button>
         </div>
       </div>
 
