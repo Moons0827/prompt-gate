@@ -1,0 +1,24 @@
+# Render Blueprint. 이 서비스는 Blueprint managed 이므로 이 파일이 있어야 한다.
+# 비밀값(API 키 등)은 sync:false 로 두어 Render 대시보드에 설정한 값을 그대로 쓴다.
+services:
+  - type: web
+    name: prompt-gate
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    envVars:
+      - key: GENERATOR
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ANTHROPIC_MODEL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        sync: false
+      - key: TEMPERATURE
+        sync: false
+      - key: MAX_TOKENS
+        sync: false
