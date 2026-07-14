@@ -1107,6 +1107,49 @@ def admin_reset(body: ResetIn, s: Session = Depends(db)):
     return {"ok": True}
 
 
+@app.post("/api/teacher/reset/{classroom_id}")
+def teacher_reset(classroom_id: int, body: ResetIn, s: Session = Depends(db)):
+    """한 학급의 활동 데이터만 초기화한다(조별 답변·판정·조사·대화·기록).
+
+    학급·조 자체는 남긴다. 다른 학급 데이터는 건드리지 않는다.
+    교사용. 코드가 맞아야 실행한다(RESET_CODE)."""
+    if body.code != settings.RESET_CODE:
+        raise HTTPException(403, "초기화 코드가 틀렸습니다.")
+    cr = s.get(Classroom, classroom_id)
+    if not cr:
+        raise HTTPException(404, "없는 학급")
+
+    team_ids = list(s.scalars(select(Team.id).where(Team.classroom_id == classroom_id)))
+    sub_ids = list(s.scalars(
+        select(Submission.id).where(Submission.team_id.in_(team_ids)))) if team_ids else []
+    ver_ids = list(s.scalars(
+        select(PromptVersion.id).where(PromptVersion.submission_id.in_(sub_ids)))) if sub_ids else []
+
+    def wipe(model, cond):
+        s.query(model).filter(cond).delete(synchronize_session=False)
+
+    if ver_ids:  # 자식(응답·검토·동료판정·역추적) → 버전 순
+        wipe(AIResponse, AIResponse.version_id.in_(ver_ids))
+        wipe(Review, Review.version_id.in_(ver_ids))
+        wipe(PeerReview, PeerReview.target_version_id.in_(ver_ids))
+        wipe(RetraceTag, RetraceTag.source_version_id.in_(ver_ids))
+        wipe(PromptVersion, PromptVersion.id.in_(ver_ids))
+    if sub_ids:
+        wipe(Event, Event.submission_id.in_(sub_ids))
+        wipe(Submission, Submission.id.in_(sub_ids))
+    if team_ids:  # 조 단위 활동 데이터
+        wipe(Judgment, Judgment.team_id.in_(team_ids))
+        wipe(JudgeItem, JudgeItem.team_id.in_(team_ids))
+        wipe(RetraceTag, RetraceTag.team_id.in_(team_ids))
+        wipe(PeerReview, PeerReview.reviewer_team_id.in_(team_ids))
+        wipe(TransferPrompt, TransferPrompt.team_id.in_(team_ids))
+        wipe(ActivityOption, ActivityOption.team_id.in_(team_ids))
+        wipe(TeamNote, TeamNote.team_id.in_(team_ids))
+    wipe(TeacherAnswer, TeacherAnswer.classroom_id == classroom_id)
+    s.commit()
+    return {"ok": True}
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True}
