@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = ""         # 문서에서 확인 후 기입
 
     TEMPERATURE: float = 0.0       # 재현성을 위해 0 고정
-    MAX_TOKENS: int = 600
+    MAX_TOKENS: int = 1500         # 답 5개를 자세히 담으려면 넉넉히
 
     # 초기화(활동 데이터 삭제) 시 요구하는 코드. 배포 시 env 로 바꿀 수 있다.
     RESET_CODE: str = "reset"

@@ -20,7 +20,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
@@ -64,8 +64,9 @@ from app.services.fidelity import (
 def _judge_gen_prompt(question: str) -> str:
     """조가 쓴 질문에 대해 서로 다른 답 5개를 번호로 받도록 감싼다."""
     return (
-        "다음 질문에 대한 서로 다른 답을 다섯 가지, 각각 번호(1~5)를 붙여 "
-        "한 문장으로 알려 줘.\n질문: " + question.strip()
+        "다음 질문에 대해 서로 확실히 다른 관점과 방법으로, 방향이 겹치지 않는 답을 "
+        "다섯 가지 만들어 줘. 각각 앞에 번호(1~5)를 붙이고, 한 답은 두세 문장으로 "
+        "구체적인 예를 들어 자세히 설명해 줘.\n질문: " + question.strip()
     )
 
 # 되돌림 태그 레지스트리. 차시마다 어떤 태그를 쓸지 SESSIONS[n]["tags"]로 고른다.
@@ -608,6 +609,19 @@ async def judge_generate(body: JudgeGenIn, s: Session = Depends(db)):
     log(s, "judge_generate", model=g.model, provider=g.provider, count=len(items), chars=len(question))
     s.commit()
     return {"question": question, "items": [{"index": i, "text": t} for i, t in enumerate(items, 1)]}
+
+
+@app.get("/api/teacher/judge-questions/{classroom_id}")
+def teacher_judge_questions(classroom_id: int, s: Session = Depends(db)):
+    """1차시: 각 조가 AI에게 물어본 질문을 교사가 확인한다(답 개수도 함께)."""
+    rows = s.execute(
+        select(Team.number, JudgeItem.question, func.count(JudgeItem.id))
+        .join(JudgeItem, JudgeItem.team_id == Team.id)
+        .where(Team.classroom_id == classroom_id)
+        .group_by(Team.id)
+        .order_by(Team.number)
+    ).all()
+    return [{"team_no": n, "question": q, "answers": cnt} for n, q, cnt in rows]
 
 
 @app.get("/api/team/{team_id}/judge")

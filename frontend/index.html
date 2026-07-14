@@ -196,10 +196,13 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
     "우리가 실제로 할 수 있는 급식 잔반 줄이기 방법을 알려 주세요.";
   const [taPrompt, setTaPrompt] = useState(DEFAULT_TA);
   const [ta, setTa] = useState(null);
+  const [jq, setJq] = useState([]);
 
   const load = async () => {
     const r = await fetch(`${API}/api/teacher/queue/${classroomId}`);
     setQ(await r.json());
+    const r2 = await fetch(`${API}/api/teacher/judge-questions/${classroomId}`);
+    if (r2.ok) setJq(await r2.json());
   };
   useEffect(() => { load(); const t = setInterval(load, 5000); return () => clearInterval(t); }, [classroomId]);
 
@@ -263,6 +266,23 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
             <div className="muted">AI 답 (학생 화면 활동3에 나타납니다)</div>
             <div className="prompt" style={{background:"#fff", border:"1px solid #cde8d5"}}>{ta.text}</div>
           </div>
+        )}
+      </div>
+
+      <div className="card">
+        <b>1차시 — 각 조가 AI에게 물어본 질문</b>
+        <div className="muted" style={{margin:"4px 0"}}>
+          학생이 직접 쓴 질문입니다. (5초마다 자동 갱신)
+        </div>
+        {jq.length === 0 ? (
+          <div className="muted" style={{marginTop:8}}>아직 질문을 보낸 조가 없습니다.</div>
+        ) : (
+          jq.map(item => (
+            <div key={item.team_no} className="prompt" style={{marginTop:8}}>
+              <b>{item.team_no}조</b> · <span className="muted">답 {item.answers}개</span>
+              <div style={{marginTop:4}}>{item.question}</div>
+            </div>
+          ))
         )}
       </div>
 

@@ -18,7 +18,7 @@ services:
       - key: TEMPERATURE
         value: "0.0"
       - key: MAX_TOKENS
-        value: "600"
+        value: "1500"
       # 비밀값 — Render 대시보드에 넣은 값을 그대로 쓴다.
       - key: ANTHROPIC_API_KEY
         sync: false
