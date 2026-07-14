@@ -437,11 +437,19 @@ function AdminView({ onLogout }) {
   const [rows, setRows] = useState([]);
   const [cfg, setCfg] = useState(null);
   const [msg, setMsg] = useState(null);
+  const [collect, setCollect] = useState(null);   // 응답 수집 결과
   const load = () => {
     fetch(`${API}/api/admin/fidelity`).then(r=>r.json()).then(setRows);
     fetch(`${API}/api/admin/config`).then(r=>r.json()).then(setCfg);
   };
   useEffect(() => { load(); }, []);
+
+  const loadCollect = async () => {
+    setCollect({loading:true});
+    const r = await fetch(`${API}/api/admin/collect`);
+    const d = await r.json();
+    setCollect(d);
+  };
 
   const reset = async () => {
     if (!confirm("모든 활동 데이터(제출·판정·대화·기록)를 지웁니다. 학급·조는 남습니다.\n정말 초기화할까요?")) return;
@@ -465,6 +473,40 @@ function AdminView({ onLogout }) {
           <button className="ghost" style={{marginLeft:10}} onClick={()=>setMsg(null)}>닫기</button>
         </div>
       )}
+      <div className="card">
+        <div className="row" style={{justifyContent:"space-between"}}>
+          <b>응답 수집 — 모든 조의 활동 기록</b>
+          <div className="row">
+            <button className="ghost" onClick={loadCollect}>화면에서 보기</button>
+            <a className="primary" href={`${API}/api/admin/collect.csv`} download="promptgate_collect.csv"
+              style={{textDecoration:"none", padding:"8px 12px", borderRadius:8}}>CSV 내려받기</a>
+          </div>
+        </div>
+        <div className="muted" style={{marginTop:4}}>
+          판정 질문·판정·비교 메모·학생 질문·교사 판정·AI 답·적합 판정·교사 답을 학급/조/차시별로 모읍니다.
+        </div>
+        {collect?.loading && <div className="muted" style={{marginTop:8}}>불러오는 중…</div>}
+        {collect?.rows && (
+          <div style={{marginTop:10, maxHeight:360, overflow:"auto", border:"1px solid var(--line)", borderRadius:8}}>
+            <table style={{width:"100%", fontSize:13}}>
+              <thead><tr>
+                <th>학급</th><th>조</th><th>차시</th><th>항목</th><th>세부</th><th style={{textAlign:"left"}}>내용</th>
+              </tr></thead>
+              <tbody>
+                {collect.rows.map((r,i)=>(
+                  <tr key={i}>
+                    <td>{r.classroom}</td><td>{r.team}</td><td>{r.session}</td>
+                    <td>{r.kind}</td><td className="muted">{r.detail}</td>
+                    <td style={{textAlign:"left", whiteSpace:"pre-wrap"}}>{r.value}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {collect?.rows && <div className="muted" style={{marginTop:6}}>총 {collect.count}행</div>}
+      </div>
+
       {cfg && (
         <div className={"card " + (cfg.warning ? "alert" : "ok")}>
           <b>생성기 설정 (매 호출마다 로그에 남습니다)</b>

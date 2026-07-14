@@ -18,7 +18,7 @@ import re
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -1226,6 +1226,97 @@ def teacher_reset_session(classroom_id: int, session_no: int,
         wipe(TeacherAnswer, TeacherAnswer.classroom_id == classroom_id)
     s.commit()
     return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────
+# 응답 수집 — 모든 조의 활동 응답을 평평한 표로 모은다(연구자용).
+# ─────────────────────────────────────────────────────────────
+_VERDICT_LABEL = {1: "바로 쓸 수 있다", 2: "우리 학교엔 안 맞다", 3: "우리가 못 한다"}
+_TAG_KO = [("tag_purpose", "목적"), ("tag_situation", "상황"), ("tag_audience", "대상"),
+           ("tag_condition", "조건"), ("tag_role", "역할"), ("tag_example", "예시")]
+
+
+def _collect_rows(s: Session) -> list[dict]:
+    tmap, cmap = {}, {}
+    for t, cr in s.execute(
+        select(Team, Classroom).join(Classroom, Classroom.id == Team.classroom_id)
+    ).all():
+        tmap[t.id] = (cr.name, t.number)
+        cmap[cr.id] = cr.name
+    rows: list[dict] = []
+
+    def add(team_id, session, kind, detail, value):
+        cn, tn = tmap.get(team_id, ("?", "?"))
+        rows.append({"classroom": cn, "team": tn, "session": session,
+                     "kind": kind, "detail": detail, "value": (value or "").strip()})
+
+    # 1차시 판정 — 질문 + AI 답 5개
+    for ji in s.scalars(select(JudgeItem).order_by(JudgeItem.team_id, JudgeItem.idx)):
+        if ji.idx == 1:
+            add(ji.team_id, 1, "판정-질문", "", ji.question)
+        add(ji.team_id, 1, "판정-AI답", f"답{ji.idx}", ji.text)
+    # 1차시 판정 결과
+    for jd in s.scalars(select(Judgment).order_by(Judgment.team_id, Judgment.item_index)):
+        v = _VERDICT_LABEL.get(jd.verdict, str(jd.verdict))
+        add(jd.team_id, 1, "판정", f"답{jd.item_index}",
+            v + (f" / 까닭: {jd.reason}" if jd.reason else ""))
+    # 조 메모(1차시 비교, 2차시 최종선정 등)
+    for tn in s.scalars(select(TeamNote).order_by(TeamNote.team_id, TeamNote.session_no)):
+        add(tn.team_id, tn.session_no, "메모", tn.key, tn.text)
+    # 되돌림 루프 — 학생 질문 · 교사 판정 · AI 답
+    for sub in s.scalars(select(Submission).order_by(Submission.team_id, Submission.session_no)):
+        for v in sub.versions:
+            add(sub.team_id, sub.session_no, "학생질문", f"{v.version}판", v.student_prompt)
+            if v.review:
+                tags = "·".join(lab for k, lab in _TAG_KO if getattr(v.review, k))
+                detail = v.review.decision.value + (f" / 태그: {tags}" if tags else "")
+                add(sub.team_id, sub.session_no, "교사판정", f"{v.version}판",
+                    detail + (f" / 까닭: {v.review.reason}" if v.review.reason else ""))
+            if v.response and v.response.text:
+                add(sub.team_id, sub.session_no, "AI답", f"{v.version}판", v.response.text)
+    # 2차시 적합 판정(O/X)
+    for op in s.scalars(select(ActivityOption).order_by(
+            ActivityOption.team_id, ActivityOption.session_no, ActivityOption.idx)):
+        fit = "O적합" if op.fit is True else ("X부적합" if op.fit is False else "미판정")
+        add(op.team_id, op.session_no, "적합판정", f"항목{op.idx}",
+            f"{op.text} → {fit}" + (f" / 이유: {op.reason}" if op.reason else ""))
+    # 6~8차시
+    for rt in s.scalars(select(RetraceTag)):
+        add(rt.team_id, 6, "역추적", "", rt.retrace_note)
+    for pr in s.scalars(select(PeerReview)):
+        add(pr.reviewer_team_id, 7, "동료판정", "", pr.reason)
+    for tp in s.scalars(select(TransferPrompt)):
+        add(tp.team_id, 8, "전이질문", "", tp.prompt)
+    # 1차시 활동3 교사 답(학급 단위)
+    for ta in s.scalars(select(TeacherAnswer)):
+        nm = cmap.get(ta.classroom_id, "?")
+        for det, val in (("교사 프롬프트", ta.prompt), ("AI 답", ta.text)):
+            rows.append({"classroom": nm, "team": "-", "session": 1,
+                         "kind": "교사답(활동3)", "detail": det, "value": (val or "").strip()})
+
+    rows.sort(key=lambda r: (str(r["classroom"]), str(r["team"]), r["session"], r["kind"]))
+    return rows
+
+
+@app.get("/api/admin/collect")
+def collect(s: Session = Depends(db)):
+    rows = _collect_rows(s)
+    return {"count": len(rows), "rows": rows}
+
+
+@app.get("/api/admin/collect.csv")
+def collect_csv(s: Session = Depends(db)):
+    import csv
+    import io
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["학급", "조", "차시", "항목", "세부", "내용"])
+    for r in _collect_rows(s):
+        w.writerow([r["classroom"], r["team"], r["session"], r["kind"], r["detail"], r["value"]])
+    # Excel 한글 깨짐 방지용 BOM
+    data = "﻿" + buf.getvalue()
+    return Response(content=data, media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": "attachment; filename=promptgate_collect.csv"})
 
 
 @app.get("/api/health")
