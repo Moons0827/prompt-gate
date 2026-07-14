@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -602,46 +603,70 @@ class JudgeGenIn(BaseModel):
     prompt: str = Field(min_length=1)   # 조가 AI에게 물어볼 질문
 
 
+# 조별 생성 잠금 — 같은 조원이 '물어보기'를 동시에 눌러도 답이 중복(10개) 생성되지 않게.
+_judge_locks: dict[int, asyncio.Lock] = {}
+
+
+def _judge_items_out(items):
+    return {"question": items[0].question if items else "",
+            "items": [{"index": it.idx, "text": it.text} for it in items]}
+
+
 @app.post("/api/team/judge/generate")
 async def judge_generate(body: JudgeGenIn, s: Session = Depends(db)):
-    """조가 쓴 질문을 AI에 보내 답 5개를 만든다(조 공유). 이미 있으면 그대로 준다."""
+    """조가 쓴 질문을 AI에 보내 답 5개를 만든다(조 공유). 이미 있으면 그대로 준다.
+
+    같은 조원이 동시에 눌러도 조당 한 번만 생성한다(잠금 + 재확인)."""
     team = s.get(Team, body.team_id)
     if not team:
         raise HTTPException(404, "없는 조")
-    existing = s.scalars(
-        select(JudgeItem).where(JudgeItem.team_id == body.team_id).order_by(JudgeItem.idx)
-    ).all()
-    if existing:
-        return {"question": existing[0].question,
-                "items": [{"index": it.idx, "text": it.text} for it in existing]}
 
-    question = body.prompt.strip()
-    gen = get_generator()
-    g = await gen.generate(_judge_gen_prompt(question))
-    if not g.ok:
-        raise HTTPException(502, f"AI 호출 실패: {g.error}")
-    items = _split_five(g.text)
-    for i, t in enumerate(items, 1):
-        s.add(JudgeItem(
-            team_id=body.team_id, question=question, idx=i, text=t,
-            provider=g.provider, model=g.model, system_prompt_hash=g.system_prompt_hash,
-        ))
-    log(s, "judge_generate", model=g.model, provider=g.provider, count=len(items), chars=len(question))
-    s.commit()
-    return {"question": question, "items": [{"index": i, "text": t} for i, t in enumerate(items, 1)]}
+    def existing():
+        return s.scalars(
+            select(JudgeItem).where(JudgeItem.team_id == body.team_id).order_by(JudgeItem.idx)
+        ).all()
+
+    have = existing()
+    if have:
+        return _judge_items_out(have)
+
+    lock = _judge_locks.setdefault(body.team_id, asyncio.Lock())
+    async with lock:
+        # 잠금 안에서 다시 확인 — 먼저 들어온 요청이 이미 만들었을 수 있다.
+        have = existing()
+        if have:
+            return _judge_items_out(have)
+
+        question = body.prompt.strip()
+        gen = get_generator()
+        g = await gen.generate(_judge_gen_prompt(question))
+        if not g.ok:
+            raise HTTPException(502, f"AI 호출 실패: {g.error}")
+        items = _split_five(g.text)
+        for i, t in enumerate(items, 1):
+            s.add(JudgeItem(
+                team_id=body.team_id, question=question, idx=i, text=t,
+                provider=g.provider, model=g.model, system_prompt_hash=g.system_prompt_hash,
+            ))
+        log(s, "judge_generate", model=g.model, provider=g.provider,
+            count=len(items), chars=len(question))
+        s.commit()
+        return {"question": question,
+                "items": [{"index": i, "text": t} for i, t in enumerate(items, 1)]}
 
 
 @app.get("/api/teacher/judge-questions/{classroom_id}")
 def teacher_judge_questions(classroom_id: int, s: Session = Depends(db)):
     """1차시: 각 조가 AI에게 물어본 질문을 교사가 확인한다(답 개수도 함께)."""
     rows = s.execute(
-        select(Team.number, JudgeItem.question, func.count(JudgeItem.id))
+        select(Team.id, Team.number, JudgeItem.question, func.count(JudgeItem.id))
         .join(JudgeItem, JudgeItem.team_id == Team.id)
         .where(Team.classroom_id == classroom_id)
         .group_by(Team.id)
         .order_by(Team.number)
     ).all()
-    return [{"team_no": n, "question": q, "answers": cnt} for n, q, cnt in rows]
+    return [{"team_id": tid, "team_no": n, "question": q, "answers": cnt}
+            for tid, n, q, cnt in rows]
 
 
 @app.get("/api/team/{team_id}/judge")
@@ -732,6 +757,41 @@ def teacher_answer_status(classroom_id: int, s: Session = Depends(db)):
     if not ta:
         return {"exists": False}
     return {"exists": True, "prompt": ta.prompt, "text": ta.text, "published": ta.published}
+
+
+class TextIn(BaseModel):
+    text: str
+
+
+@app.post("/api/teacher/judge/teacher-answer/{classroom_id}/text")
+def teacher_answer_edit_text(classroom_id: int, body: TextIn, s: Session = Depends(db)):
+    """교사가 활동3 AI 답을 직접 수정한다(전송 여부는 그대로)."""
+    ta = s.scalar(select(TeacherAnswer).where(TeacherAnswer.classroom_id == classroom_id))
+    if not ta:
+        raise HTTPException(404, "먼저 AI 답을 만들어 주세요.")
+    ta.text = body.text.strip()
+    log(s, "teacher_answer_edit")
+    s.commit()
+    return {"ok": True, "published": ta.published}
+
+
+class JudgeItemEditIn(BaseModel):
+    team_id: int
+    idx: int
+    text: str
+
+
+@app.post("/api/teacher/judge/item")
+def teacher_edit_judge_item(body: JudgeItemEditIn, s: Session = Depends(db)):
+    """교사가 1차시 AI 답(5개 중 하나)을 수정한다. 학생 화면에 바로 반영된다."""
+    it = s.scalar(select(JudgeItem).where(
+        JudgeItem.team_id == body.team_id, JudgeItem.idx == body.idx))
+    if not it:
+        raise HTTPException(404, "없는 답")
+    it.text = body.text.strip()
+    log(s, "teacher_edit_judge_item", team=body.team_id, idx=body.idx)
+    s.commit()
+    return {"ok": True}
 
 
 # ── 조 자유 서술 메모 (1차시 비교, 2차시 최종선정 등) ──────────────────

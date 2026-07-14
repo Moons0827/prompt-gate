@@ -202,6 +202,41 @@ function TeamView({ teamId, teamLabel, sess, cfg, onLogout }) {
   );
 }
 
+// ─────────── 교사: 한 조의 1차시 AI 답(5개) 수정 ───────────
+function JudgeAnswerEditor({ teamId }) {
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState(null);
+  const [saved, setSaved] = useState(null);
+  const loadItems = async () => {
+    const r = await fetch(`${API}/api/team/${teamId}/judge`);
+    const d = await r.json();
+    setItems((d.items || []).map(it => ({ idx: it.index, text: it.text })));
+  };
+  const toggle = () => { const n = !open; setOpen(n); if (n && !items) loadItems(); };
+  const saveItem = async (idx, text) => {
+    const r = await fetch(`${API}/api/teacher/judge/item`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ team_id: Number(teamId), idx, text }) });
+    if (r.ok) { setSaved(idx); setTimeout(() => setSaved(null), 1500); }
+  };
+  return (
+    <div style={{ marginTop: 6 }}>
+      <button className="ghost" onClick={toggle}>{open ? "AI 답 수정 닫기" : "AI 답 수정"}</button>
+      {open && !items && <div className="muted" style={{ marginTop: 6 }}>불러오는 중…</div>}
+      {open && items && items.map(it => (
+        <div key={it.idx} style={{ marginTop: 8 }}>
+          <div className="muted">답 {it.idx}</div>
+          <textarea value={it.text} style={{ minHeight: 56 }}
+            onChange={e => setItems(items.map(x => x.idx === it.idx ? { ...x, text: e.target.value } : x))} />
+          <button className="ghost" onClick={() => saveItem(it.idx, it.text)}>
+            {saved === it.idx ? "저장됨 ✔" : "저장"}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ─────────── 교사 화면 ───────────
 function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
   const [q, setQ] = useState([]);
@@ -222,10 +257,11 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
     setQ(await r.json());
     const r2 = await fetch(`${API}/api/teacher/judge-questions/${classroomId}`);
     if (r2.ok) setJq(await r2.json());
-    // 현재 만들어 둔 교사 답과 전송 여부를 유지(새로고침해도 남게)
+    // 현재 만들어 둔 교사 답과 전송 여부를 유지(새로고침해도 남게).
+    // 교사가 편집 중(dirty)이거나 생성 중이면 폴링이 덮어쓰지 않는다.
     const r3 = await fetch(`${API}/api/teacher/judge/teacher-answer/${classroomId}`);
     if (r3.ok) { const d = await r3.json();
-      setTa(prev => (prev && prev.loading) ? prev
+      setTa(prev => (prev && (prev.loading || prev.dirty)) ? prev
         : (d.exists ? {text:d.text, prompt:d.prompt, published:d.published} : null)); }
     const r4 = await fetch(`${API}/api/teacher/responses/${classroomId}`);
     if (r4.ok) setResp((await r4.json()).rows || []);
@@ -241,11 +277,20 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
     setTa(r.ok ? {...d, published:false} : {error: d.detail});
   };
 
+  const saveTeacherText = async () => {
+    const r = await fetch(`${API}/api/teacher/judge/teacher-answer/${classroomId}/text`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({text: ta.text})});
+    if (!r.ok) { setTa(prev => ({...prev, error:"수정 저장 실패"})); return; }
+    setTa(prev => ({...prev, dirty:false, error:undefined}));
+  };
+
   const sendTeacherAnswer = async () => {
+    if (ta?.dirty) await saveTeacherText();   // 편집분 먼저 저장하고 전송
     const r = await fetch(`${API}/api/teacher/judge/teacher-answer/${classroomId}/publish`, {method:"POST"});
     const d = await r.json().catch(()=>({}));
     if (!r.ok) { setTa(prev => ({...prev, error: d.detail || "전송 실패"})); return; }
-    setTa(prev => ({...prev, published:true, error:undefined}));
+    setTa(prev => ({...prev, published:true, dirty:false, error:undefined}));
   };
 
   const act = async (decision) => {
@@ -326,11 +371,13 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
         <textarea value={taPrompt} onChange={e=>setTaPrompt(e.target.value)} />
         {ta?.loading && <div className="muted" style={{marginTop:8}}>생성 중…</div>}
         {ta?.error && <div className="hint" style={{marginTop:8}}>{ta.error}</div>}
-        {ta?.text && (
+        {ta?.text !== undefined && ta?.text !== null && (
           <div style={{marginTop:8}}>
-            <div className="muted">AI 답 (미리 보기 — 전송해야 학생이 봅니다)</div>
-            <div className="prompt" style={{background:"#fff", border:"1px solid #cde8d5"}}>{stripMd(ta.text)}</div>
+            <div className="muted">AI 답 (직접 고칠 수 있어요. 전송해야 학생이 봅니다)</div>
+            <textarea value={ta.text} style={{minHeight:120, background:"#fff", border:"1px solid #cde8d5"}}
+              onChange={e=>setTa(prev=>({...prev, text:e.target.value, dirty:true}))} />
             <div className="row" style={{marginTop:10, alignItems:"center"}}>
+              <button className="ghost" onClick={saveTeacherText}>{ta.dirty ? "수정 저장" : "저장됨"}</button>
               {ta.published ? (
                 <>
                   <span className="ok" style={{padding:"6px 10px", borderRadius:8}}>✔ 학생에게 전송됨</span>
@@ -359,6 +406,7 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
             <div key={item.team_no} className="prompt" style={{marginTop:8}}>
               <b>{item.team_no}조</b> · <span className="muted">답 {item.answers}개</span>
               <div style={{marginTop:4}}>{item.question}</div>
+              <JudgeAnswerEditor teamId={item.team_id} />
             </div>
           ))
         )}
@@ -686,29 +734,41 @@ function JudgeModule({ teamId, teamLabel, sess, cfg, onLogout }) {
       <ModuleHeader sess={sess} cfg={cfg} teamLabel={teamLabel} onLogout={onLogout}
         right={<button className="ghost" onClick={load}>새로고침</button>} />
       {cfg.intro && <div className="card" style={{background:"#eef2f8"}}>{cfg.intro}</div>}
-      {!data ? <div className="card">불러오는 중…</div> : !data.ready ? (
+      {!data ? <div className="card">불러오는 중…</div> : (
+        <>
         <div className="card">
           <b>활동 1 · AI에게 물어봐요</b>
           <div className="muted" style={{margin:"6px 0"}}>
             AI에게 급식 잔반을 줄일 수 있는지 질문을 하려고 합니다. 모둠원과 상의해서
             어떤 질문을 할지 적어보세요. (AI가 답 5개를 주면 하나씩 분류합니다.)
           </div>
-          <textarea value={q} onChange={e=>setQ(e.target.value)}
-            placeholder="예: 급식 잔반을 줄이는 방법을 알려 줘." />
-          <div className="row" style={{marginTop:10}}>
-            <button className="primary" onClick={generate} disabled={gen || !q.trim()}>
-              {gen ? "물어보는 중…" : "AI에게 물어보기 (답 5개 받기)"}
-            </button>
-            <span className="muted">조원 누구나 보낼 수 있고, 답은 조 전체가 함께 봅니다.</span>
-          </div>
-          {msg?.bad && <div className="hint" style={{marginTop:8}}>{msg.text}</div>}
+          {!data.ready ? (
+            <>
+              <textarea value={q} onChange={e=>setQ(e.target.value)}
+                placeholder="예: 급식 잔반을 줄이는 방법을 알려 줘." />
+              <div className="row" style={{marginTop:10}}>
+                <button className="primary" onClick={generate} disabled={gen || !q.trim()}>
+                  {gen ? "물어보는 중…" : "AI에게 물어보기 (답 5개 받기)"}
+                </button>
+                <span className="muted">조원 누구나 보낼 수 있고, 답은 조 전체가 함께 봅니다.</span>
+              </div>
+              {msg?.bad && <div className="hint" style={{marginTop:8}}>{msg.text}</div>}
+            </>
+          ) : (
+            <div>
+              <div className="muted">우리 조가 AI에게 보낸 질문</div>
+              <div className="prompt">{data.question}</div>
+              <div className="muted" style={{marginTop:6, color:"var(--green,#2a8a4a)"}}>
+                ✔ AI가 답 5개를 주었어요. 아래 활동2에서 하나씩 분류합니다.
+              </div>
+            </div>
+          )}
         </div>
-      ) : (
+
+        {data.ready && (
         <div className="card">
           <b>활동 2 · AI 답을 분류해요</b>
-          <div className="muted" style={{marginTop:6}}>우리 조가 물어본 것</div>
-          <div className="prompt">{data.question}</div>
-          <div className="muted" style={{marginTop:10}}>
+          <div className="muted" style={{marginTop:6}}>
             AI가 알려준 답을 아래 기준에 따라 분류하고, 왜 그렇게 생각했는지 모둠원과 상의해서 적어보세요.
           </div>
           <div className="prompt" style={{marginTop:8, fontSize:14, lineHeight:1.7}}>
@@ -737,6 +797,8 @@ function JudgeModule({ teamId, teamLabel, sess, cfg, onLogout }) {
             {msg && <span className="muted" style={msg.bad?{color:"var(--red)"}:{}}>{msg.text}</span>}
           </div>
         </div>
+        )}
+        </>
       )}
 
       {cfg.teacher_compare && (
