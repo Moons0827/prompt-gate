@@ -62,11 +62,16 @@ from app.services.fidelity import (
 #   transfer : 전이 과제 저장만 (8차시, 되돌림·AI·피드백 없음)
 # ─────────────────────────────────────────────────────────────
 def _judge_gen_prompt(question: str) -> str:
-    """조가 쓴 질문에 대해 서로 다른 답 5개를 번호로 받도록 감싼다."""
+    """조가 쓴 질문에 대해 서로 다른 답 5개를 정해진 형식으로 받도록 감싼다."""
     return (
-        "다음 질문에 대해 서로 확실히 다른 관점과 방법으로, 방향이 겹치지 않는 답을 "
-        "다섯 가지 만들어 줘. 각각 앞에 번호(1~5)를 붙이고, 한 답은 두세 문장으로 "
-        "구체적인 예를 들어 자세히 설명해 줘.\n질문: " + question.strip()
+        "다음 질문에 대해 서로 확실히 다른 관점과 방법으로, 방향이 겹치지 않는 답 "
+        "다섯 가지를 만들어 줘.\n"
+        "형식 규칙(반드시 지켜라):\n"
+        "- 각 답은 '@@1@@ ' 처럼 번호 마커로 시작한다(@@1@@ 부터 @@5@@ 까지).\n"
+        "- 한 답은 두세 문장으로, 구체적인 예를 들어 자세히 설명한다.\n"
+        "- 제목·머리말·맺음말·구분선(---)·마크다운 기호(#, *)는 절대 쓰지 마라.\n"
+        "예시:\n@@1@@ 첫 번째 방법은 이렇게 한다. 예를 들어 …\n"
+        "@@2@@ 두 번째 방법은 …\n\n질문: " + question.strip()
     )
 
 # 되돌림 태그 레지스트리. 차시마다 어떤 태그를 쓸지 SESSIONS[n]["tags"]로 고른다.
@@ -569,12 +574,27 @@ async def review(body: ReviewIn, s: Session = Depends(db)):
 # 1차시 — AI 답 5개 판정표 (judge). 학생은 프롬프트를 쓰지 않는다.
 # ─────────────────────────────────────────────────────────────
 def _split_five(text: str) -> list[str]:
-    """모델이 준 번호 목록을 최대 5개 항목으로 쪼갠다."""
-    parts = re.split(r"\s*(?:^|\n)\s*\d+[\.\)]\s*", text)
-    parts = [p.strip() for p in parts if p.strip()]
-    if len(parts) < 2:  # 번호가 없으면 줄/기호로 나눈다
-        parts = [p.strip() for p in re.split(r"[\n·•]+", text) if p.strip()]
-    return parts[:5] if parts else [text.strip()]
+    """모델 응답을 최대 5개 답으로 쪼갠다.
+
+    답이 길어지면 모델이 마크다운(#, ---, **)을 섞어 내보낸다. 그것을 걷어내고
+    우리가 지정한 '@@N@@' 마커 기준으로 나눈다. 마커가 없으면 번호(1.)로 폴백."""
+    t = (text or "").replace("**", "").replace("__", "")
+    t = re.sub(r"(?m)^\s*#{1,6}\s*", "", t)      # 헤더(#) 기호 제거
+    t = re.sub(r"(?m)^\s*-{3,}\s*$", "", t)       # 구분선(---) 줄 제거
+
+    def clean(p: str) -> str:
+        return re.sub(r"[ \t]*\n[ \t]*", " ", p).strip(" \t\n-–—")
+
+    if re.search(r"@@\s*\d+\s*@@", t):
+        # 마커 뒤 내용만 뽑는다 — 마커 앞 머리말은 통째로 무시된다.
+        parts = re.findall(r"@@\s*\d+\s*@@\s*(.*?)(?=@@\s*\d+\s*@@|$)", t, re.S)
+    else:
+        parts = re.split(r"(?m)^\s*\d+[\.\)]\s*", t)
+        if len(parts) >= 2:
+            parts = parts[1:]   # 첫 번호(1.) 앞 머리말·제목은 버린다
+    parts = [clean(p) for p in parts]
+    parts = [p for p in parts if p]
+    return parts[:5] if parts else [t.strip()]
 
 
 class JudgeGenIn(BaseModel):
