@@ -16,13 +16,16 @@ class AnthropicGenerator(Generator):
         return settings.TEMPERATURE
 
     async def _call(self, prompt: str) -> str:
-        if not settings.ANTHROPIC_API_KEY:
+        # 배포 환경변수에 딸려 들어간 공백·줄바꿈·따옴표를 제거한다.
+        # (키는 멀쩡해도 헤더에 '\n'·따옴표가 섞이면 401 invalid x-api-key)
+        api_key = settings.ANTHROPIC_API_KEY.strip().strip('"').strip("'").strip()
+        if not api_key:
             raise RuntimeError("ANTHROPIC_API_KEY 가 비어 있다.")
         async with httpx.AsyncClient(timeout=settings.TIMEOUT_S) as client:
             r = await client.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={
-                    "x-api-key": settings.ANTHROPIC_API_KEY,
+                    "x-api-key": api_key,
                     "anthropic-version": "2023-06-01",
                     "content-type": "application/json",
                 },
