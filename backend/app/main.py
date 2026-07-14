@@ -657,8 +657,9 @@ def team_judge_get(team_id: int, s: Session = Depends(db)):
         j.item_index: j
         for j in s.scalars(select(Judgment).where(Judgment.team_id == team_id)).all()
     }
-    # 활동3: 교사의 상세 프롬프트 답(학급 공유) + 우리 조의 비교 메모
-    ta = s.scalar(select(TeacherAnswer).where(TeacherAnswer.classroom_id == team.classroom_id))
+    # 활동3: 교사의 상세 프롬프트 답(학급 공유) — '전송(published)'된 것만 학생에게 보인다.
+    ta = s.scalar(select(TeacherAnswer).where(
+        TeacherAnswer.classroom_id == team.classroom_id, TeacherAnswer.published.is_(True)))
     compare = s.scalar(
         select(TeamNote).where(
             TeamNote.team_id == team_id, TeamNote.session_no == 1, TeamNote.key == "compare"
@@ -688,7 +689,9 @@ class TeacherAnswerIn(BaseModel):
 
 @app.post("/api/teacher/judge/teacher-answer")
 async def teacher_answer_gen(body: TeacherAnswerIn, s: Session = Depends(db)):
-    """교사가 자세한 프롬프트를 AI에 보내 답을 만든다(학급 공유). 다시 누르면 새로 만든다."""
+    """교사가 자세한 프롬프트로 답을 만든다(아직 학생에겐 안 보임 — published=False).
+
+    교사가 확인한 뒤 '전송'을 눌러야 학생에게 공개된다. 다시 누르면 새로 만든다."""
     cr = s.get(Classroom, body.classroom_id)
     if not cr:
         raise HTTPException(404, "없는 학급")
@@ -702,11 +705,33 @@ async def teacher_answer_gen(body: TeacherAnswerIn, s: Session = Depends(db)):
         s.delete(old)
     s.add(TeacherAnswer(
         classroom_id=body.classroom_id, prompt=body.prompt.strip(), text=g.text,
+        published=False,
         provider=g.provider, model=g.model, system_prompt_hash=g.system_prompt_hash,
     ))
     log(s, "teacher_answer", model=g.model, provider=g.provider)
     s.commit()
-    return {"prompt": body.prompt.strip(), "text": g.text}
+    return {"prompt": body.prompt.strip(), "text": g.text, "published": False}
+
+
+@app.post("/api/teacher/judge/teacher-answer/{classroom_id}/publish")
+def teacher_answer_publish(classroom_id: int, s: Session = Depends(db)):
+    """만들어 둔 교사 답을 학생에게 전송(공개)한다."""
+    ta = s.scalar(select(TeacherAnswer).where(TeacherAnswer.classroom_id == classroom_id))
+    if not ta:
+        raise HTTPException(404, "먼저 AI 답을 만들어 주세요.")
+    ta.published = True
+    log(s, "teacher_answer_publish")
+    s.commit()
+    return {"ok": True, "published": True}
+
+
+@app.get("/api/teacher/judge/teacher-answer/{classroom_id}")
+def teacher_answer_status(classroom_id: int, s: Session = Depends(db)):
+    """교사 화면용: 현재 만들어 둔 교사 답과 전송 여부."""
+    ta = s.scalar(select(TeacherAnswer).where(TeacherAnswer.classroom_id == classroom_id))
+    if not ta:
+        return {"exists": False}
+    return {"exists": True, "prompt": ta.prompt, "text": ta.text, "published": ta.published}
 
 
 # ── 조 자유 서술 메모 (1차시 비교, 2차시 최종선정 등) ──────────────────

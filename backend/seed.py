@@ -8,6 +8,16 @@ from app.main import SessionLocal, Base, engine
 from app.models import Classroom, Condition, Team
 
 Base.metadata.create_all(engine)
+
+# 가벼운 마이그레이션: 기존 DB에 없을 수 있는 컬럼을 더한다(있으면 무시).
+from sqlalchemy import text as _sql
+with engine.begin() as _conn:
+    try:
+        _conn.execute(_sql("ALTER TABLE teacher_answers ADD COLUMN published BOOLEAN DEFAULT 0"))
+        print("마이그레이션: teacher_answers.published 추가")
+    except Exception:
+        pass  # 이미 있으면 통과
+
 s = SessionLocal()
 
 TEAMS_PER_CLASS = 6

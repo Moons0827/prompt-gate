@@ -213,6 +213,11 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
     setQ(await r.json());
     const r2 = await fetch(`${API}/api/teacher/judge-questions/${classroomId}`);
     if (r2.ok) setJq(await r2.json());
+    // 현재 만들어 둔 교사 답과 전송 여부를 유지(새로고침해도 남게)
+    const r3 = await fetch(`${API}/api/teacher/judge/teacher-answer/${classroomId}`);
+    if (r3.ok) { const d = await r3.json();
+      setTa(prev => (prev && prev.loading) ? prev
+        : (d.exists ? {text:d.text, prompt:d.prompt, published:d.published} : null)); }
   };
   useEffect(() => { load(); const t = setInterval(load, 5000); return () => clearInterval(t); }, [classroomId]);
 
@@ -222,7 +227,14 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
       headers:{"Content-Type":"application/json"},
       body: JSON.stringify({classroom_id: Number(classroomId), prompt: taPrompt})});
     const d = await r.json();
-    setTa(r.ok ? d : {error: d.detail});
+    setTa(r.ok ? {...d, published:false} : {error: d.detail});
+  };
+
+  const sendTeacherAnswer = async () => {
+    const r = await fetch(`${API}/api/teacher/judge/teacher-answer/${classroomId}/publish`, {method:"POST"});
+    const d = await r.json().catch(()=>({}));
+    if (!r.ok) { setTa(prev => ({...prev, error: d.detail || "전송 실패"})); return; }
+    setTa(prev => ({...prev, published:true, error:undefined}));
   };
 
   const act = async (decision) => {
@@ -297,7 +309,7 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
           <button className="ghost" onClick={genTeacherAnswer}>AI 답 만들기</button>
         </div>
         <div className="muted" style={{margin:"4px 0"}}>
-          맥락을 담은 자세한 프롬프트를 넣어 AI 답을 만듭니다(학급 공유). 학생이 자기 조 답과 비교합니다.
+          맥락을 담은 자세한 프롬프트로 AI 답을 만든 뒤, 확인하고 <b>전송</b>을 눌러야 학생 화면에 나타납니다.
           1차시 판정 답은 각 조가 직접 만들고, 2~5차시 학생 질문은 아래 대기열로 옵니다.
         </div>
         <textarea value={taPrompt} onChange={e=>setTaPrompt(e.target.value)} />
@@ -305,8 +317,21 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
         {ta?.error && <div className="hint" style={{marginTop:8}}>{ta.error}</div>}
         {ta?.text && (
           <div style={{marginTop:8}}>
-            <div className="muted">AI 답 (학생 화면 활동3에 나타납니다)</div>
+            <div className="muted">AI 답 (미리 보기 — 전송해야 학생이 봅니다)</div>
             <div className="prompt" style={{background:"#fff", border:"1px solid #cde8d5"}}>{stripMd(ta.text)}</div>
+            <div className="row" style={{marginTop:10, alignItems:"center"}}>
+              {ta.published ? (
+                <>
+                  <span className="ok" style={{padding:"6px 10px", borderRadius:8}}>✔ 학생에게 전송됨</span>
+                  <button className="ghost" onClick={sendTeacherAnswer}>다시 전송</button>
+                </>
+              ) : (
+                <>
+                  <button className="primary" onClick={sendTeacherAnswer}>학생에게 전송</button>
+                  <span className="muted">아직 학생에게 안 보입니다.</span>
+                </>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -627,9 +652,7 @@ function JudgeModule({ teamId, teamLabel, sess, cfg, onLogout }) {
           <b>활동 3 · 선생님의 질문과 비교해요</b>
           {data?.teacher_answer ? (
             <div style={{marginTop:8}}>
-              <div className="muted">선생님이 자세히 물어본 것</div>
-              <div className="prompt">{data.teacher_answer.prompt}</div>
-              <div className="muted" style={{marginTop:8}}>선생님이 받은 AI 답</div>
+              <div className="muted">선생님이 받은 AI 답</div>
               <div className="prompt" style={{background:"#fff", border:"1px solid #cde8d5"}}>{stripMd(data.teacher_answer.text)}</div>
             </div>
           ) : (

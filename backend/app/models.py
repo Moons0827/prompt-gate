@@ -265,6 +265,8 @@ class TeacherAnswer(Base):
     classroom_id: Mapped[int] = mapped_column(ForeignKey("classrooms.id"))
     prompt: Mapped[str] = mapped_column(Text)               # 교사가 넣은 자세한 프롬프트
     text: Mapped[str] = mapped_column(Text)                 # AI 답
+    # 생성만으로는 학생에게 안 보인다. 교사가 '전송'을 눌러야 True 가 되어 공개된다.
+    published: Mapped[bool] = mapped_column(Boolean, default=False)
     provider: Mapped[str] = mapped_column(String(20), default="")
     model: Mapped[str] = mapped_column(String(60), default="")
     system_prompt_hash: Mapped[str] = mapped_column(String(20), default="")
