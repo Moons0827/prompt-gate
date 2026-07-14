@@ -162,8 +162,16 @@ function TeamView({ teamId, teamLabel, sess, cfg, onLogout }) {
             <div className="muted" style={{marginTop:4}}>통과하면 AI가 {cfg.answers}가지로 답해요.</div>
           )}
           {cfg.tags && cfg.tags.length >= 6 && (
-            <div className="muted" style={{marginTop:4}}>
-              질문에 {cfg.tags.map(t=>t.label).join(" ")} 가 있는지 확인해요.
+            <div style={{marginTop:8, background:"#f2f5f9", borderRadius:8, padding:"10px 12px"}}>
+              <div className="muted">만든 질문에 아래 6가지가 있는지 모둠원끼리 확인해봅시다.</div>
+              <div style={{marginTop:6, display:"flex", flexWrap:"wrap", gap:"6px 16px"}}>
+                {cfg.tags.map((t,i) => (
+                  <label key={t.key} title={t.desc} style={{fontSize:14}}>
+                    <input type="checkbox" checked={!!checks[i]}
+                      onChange={e=>setChecks({...checks, [i]: e.target.checked})} /> {t.label}
+                  </label>
+                ))}
+              </div>
             </div>
           )}
           <textarea value={text} onChange={e=>setText(e.target.value)}
@@ -648,7 +656,8 @@ function JudgeModule({ teamId, teamLabel, sess, cfg, onLogout }) {
         <div className="card">
           <b>활동 1 · AI에게 물어봐요</b>
           <div className="muted" style={{margin:"6px 0"}}>
-            우리 조가 AI에게 물어볼 질문을 쓰세요. AI가 답 5개를 주면, 하나씩 판정합니다.
+            AI에게 급식 잔반을 줄일 수 있는지 질문을 하려고 합니다. 모둠원과 상의해서
+            어떤 질문을 할지 적어보세요. (AI가 답 5개를 주면 하나씩 분류합니다.)
           </div>
           <textarea value={q} onChange={e=>setQ(e.target.value)}
             placeholder="예: 급식 잔반을 줄이는 방법을 알려 줘." />
@@ -662,10 +671,17 @@ function JudgeModule({ teamId, teamLabel, sess, cfg, onLogout }) {
         </div>
       ) : (
         <div className="card">
-          <b>활동 2 · AI 답을 판정해요</b>
+          <b>활동 2 · AI 답을 분류해요</b>
           <div className="muted" style={{marginTop:6}}>우리 조가 물어본 것</div>
           <div className="prompt">{data.question}</div>
-          <div className="muted" style={{marginTop:10}}>AI가 준 답을 하나씩 판정하세요. ②·③에는 까닭을 씁니다.</div>
+          <div className="muted" style={{marginTop:10}}>
+            AI가 알려준 답을 아래 기준에 따라 분류하고, 왜 그렇게 생각했는지 모둠원과 상의해서 적어보세요.
+          </div>
+          <div className="prompt" style={{marginTop:8, fontSize:14, lineHeight:1.7}}>
+            <div><b>① 바로 쓸 수 있다</b> — 우리 학교 및 반에서 지금 그대로 해 볼 수 있다.</div>
+            <div><b>② 우리 학교엔 안 맞다</b> — 좋은 말이지만 우리 학교 및 반의 사정과 맞지 않는다.</div>
+            <div><b>③ 우리가 못 한다</b> — 초등학생인 우리 힘으로는 할 수 없는 일이다.</div>
+          </div>
           {data.items.map(it => (
             <div key={it.index} style={{marginTop:12, borderTop:"1px dashed var(--line)", paddingTop:10}}>
               <div><b>{it.index}.</b> {it.text}</div>
@@ -675,8 +691,8 @@ function JudgeModule({ teamId, teamLabel, sess, cfg, onLogout }) {
                     onClick={()=>setEdit({...edit, [it.index]:{...edit[it.index], verdict:val}})}>{val} {label}</span>
                 ))}
               </div>
-              {[2,3].includes(edit[it.index]?.verdict) && (
-                <input placeholder="왜 그렇게 판정했나요?" value={edit[it.index]?.reason||""}
+              {edit[it.index]?.verdict && (
+                <input placeholder="분류한 이유 (왜 그렇게 생각했나요?)" value={edit[it.index]?.reason||""}
                   onChange={e=>setEdit({...edit, [it.index]:{...edit[it.index], reason:e.target.value}})}
                   style={{width:"100%", marginTop:8, padding:8, border:"1px solid var(--line)", borderRadius:8, font:"inherit"}} />
               )}
@@ -701,7 +717,8 @@ function JudgeModule({ teamId, teamLabel, sess, cfg, onLogout }) {
             <div className="muted" style={{marginTop:6}}>아직 선생님이 활동3 답을 만들지 않았어요.</div>
           )}
           <div className="muted" style={{marginTop:10}}>
-            선생님 답과 우리 답이 어떻게 달랐나요? 왜 그랬을까요?
+            선생님의 질문에 대한 AI의 답변과, 여러분의 질문에 대한 AI의 답변이 어떻게 달랐는지
+            모둠원끼리 토의해서 적어보세요.
           </div>
           <textarea value={compare} onChange={e=>setCompare(e.target.value)}
             placeholder="예: 선생님은 우리 반이 무엇을 남기는지 알려 줘서 우리 학교에 맞는 답이 왔어요." />
@@ -953,19 +970,22 @@ function ActivitySection({ teamId, sess }) {
   );
   return (
     <div className="card">
-      <b>활동 3 · AI가 준 방법 중 우리가 할 수 있는 것 고르기</b>
-      <div className="muted" style={{marginBottom:6}}>각 방법이 우리 학교·반에서 실제로 할 수 있는지 O(적합)/X로 고르고, X면 이유를 써요.</div>
+      <b>활동 3 · 적합한 활동 고르고 최종 선정하기</b>
+      <div className="muted" style={{marginBottom:6}}>
+        AI가 알려준 내용 중 우리가 실제 활동하기 적합한 활동을 골라보고(O/X),
+        분류한 이유를 적은 뒤, 최종적으로 어떤 활동을 할지 선정해봅시다.
+      </div>
       {data.options.map(o => (
         <div key={o.idx} style={{marginTop:10, borderTop:"1px dashed var(--line)", paddingTop:8}}>
           <div><b>{o.idx}.</b> {o.text}</div>
           <div className="tags" style={{marginTop:6}}>
-            {[["O",true],["X",false]].map(([lab,val]) => (
+            {[["O 적합",true],["X 부적합",false]].map(([lab,val]) => (
               <span key={lab} className={"tag"+(edit[o.idx]?.fit===val?" on":"")}
                 onClick={()=>setEdit({...edit,[o.idx]:{...edit[o.idx],fit:val}})}>{lab}</span>
             ))}
           </div>
-          {edit[o.idx]?.fit===false && (
-            <input placeholder="왜 적합하지 않나요?" value={edit[o.idx]?.reason||""}
+          {(edit[o.idx]?.fit===true || edit[o.idx]?.fit===false) && (
+            <input placeholder="분류한 이유" value={edit[o.idx]?.reason||""}
               onChange={e=>setEdit({...edit,[o.idx]:{...edit[o.idx],reason:e.target.value}})}
               style={{width:"100%",marginTop:6,padding:8,border:"1px solid var(--line)",borderRadius:8,font:"inherit"}} />
           )}
@@ -973,7 +993,7 @@ function ActivitySection({ teamId, sess }) {
         </div>
       ))}
       {msg && <div className="hint" style={{marginTop:8}}>{msg}</div>}
-      <div className="muted" style={{marginTop:14}}>최종적으로 선정한 활동</div>
+      <div className="muted" style={{marginTop:14}}>최종적으로 선정한 활동을 적어봅시다.</div>
       <textarea value={final} onChange={e=>setFinal(e.target.value)} placeholder="우리 조가 실제로 할 활동을 적어요." />
       <div><button className="primary" style={{marginTop:8}} onClick={saveFinal} disabled={!final.trim()}>최종 선정 저장</button></div>
     </div>
