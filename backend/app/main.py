@@ -440,9 +440,9 @@ async def review(body: ReviewIn, s: Session = Depends(db)):
             ]
         ):
             raise HTTPException(400, "되돌리려면 태그를 하나 이상 붙여야 합니다.")
-        if len(body.reason.strip()) < 10:
-            raise HTTPException(400, "까닭을 써 주세요. " + NUDGE)
-        rtype, rscore = classify_reason(body.reason)
+        # 까닭은 선택 — 태그만으로도 되돌릴 수 있다. 쓰면 서사성으로 분류한다.
+        if body.reason.strip():
+            rtype, rscore = classify_reason(body.reason)
 
     rev = Review(
         version_id=v.id,

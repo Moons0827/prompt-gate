@@ -263,6 +263,8 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
   const [resp, setResp] = useState([]);   // 학생 응답 실시간
   const [maxReturns, setMaxReturns] = useState(0);   // 되돌림 최대 횟수(0=무제한)
   const [maxDirty, setMaxDirty] = useState(false);
+  const [teachSess, setTeachSess] = useState(1);     // 교사가 보는 차시
+  const mode = (sessCfg?.[teachSess] || {}).mode;
 
   const load = async () => {
     const r = await fetch(`${API}/api/teacher/queue/${classroomId}`);
@@ -337,19 +339,18 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
     load();
   };
 
-  const [resetSess, setResetSess] = useState(1);
   const resetSession = async () => {
-    const sc = sessCfg?.[resetSess] || {};
-    if (!confirm(`${classLabel} · ${resetSess}차시(${sc.title||""}) 활동 데이터만 지웁니다.\n다른 차시와 다른 학급은 그대로예요. 조 구성도 남습니다.\n\n정말 초기화할까요?`)) return;
+    const sc = sessCfg?.[teachSess] || {};
+    if (!confirm(`${classLabel} · ${teachSess}차시(${sc.title||""}) 활동 데이터만 지웁니다.\n다른 차시와 다른 학급은 그대로예요. 조 구성도 남습니다.\n\n정말 초기화할까요?`)) return;
     const code = prompt("초기화 코드를 입력하세요.");
     if (code == null) return;
-    const r = await fetch(`${API}/api/teacher/reset/${classroomId}/${resetSess}`, {
+    const r = await fetch(`${API}/api/teacher/reset/${classroomId}/${teachSess}`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code }),
     });
     const d = await r.json().catch(()=>({}));
     if (!r.ok) { setMsg({ bad: true, text: d.detail || "초기화 실패" }); return; }
-    setMsg({ bad: false, text: `${resetSess}차시 초기화 완료. 학생이 새로 시작할 수 있습니다.` });
+    setMsg({ bad: false, text: `${teachSess}차시 초기화 완료. 학생이 새로 시작할 수 있습니다.` });
     setSel(null); load();
   };
 
@@ -359,30 +360,28 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
 
   return (
     <div>
-      <div className="card row" style={{justifyContent:"space-between"}}>
-        <div><b>{classLabel}</b> <span className="muted">· 대기 {q.length}건 (5초마다 자동 갱신)</span></div>
+      <div className="card row" style={{justifyContent:"space-between", alignItems:"center"}}>
+        <div className="row" style={{alignItems:"center", gap:10}}>
+          <b>{classLabel}</b>
+          <select value={teachSess} onChange={e=>{setTeachSess(Number(e.target.value)); setSel(null);}}
+            style={{padding:8, borderRadius:8, border:"1px solid var(--line)", font:"inherit"}}>
+            {Object.values(sessCfg||{}).sort((a,b)=>a.no-b.no).map(sc => (
+              <option key={sc.no} value={sc.no}>{sc.no}차시 · {sc.title}</option>
+            ))}
+          </select>
+        </div>
         <div className="row">
           <button className="ghost" onClick={load}>새로고침</button>
           <button className="ghost" onClick={onLogout}>로그아웃</button>
         </div>
       </div>
 
-      <div className="card">
-        <b>차시별 초기화</b>
-        <div className="muted" style={{margin:"4px 0"}}>
-          고른 차시의 이 학급 활동 데이터만 지웁니다. 다른 차시·다른 학급·조 구성은 그대로예요. (코드 필요)
-        </div>
-        <div className="row" style={{marginTop:6}}>
-          <select value={resetSess} onChange={e=>setResetSess(Number(e.target.value))}
-            style={{padding:8, borderRadius:8, border:"1px solid var(--line)", font:"inherit"}}>
-            {Object.values(sessCfg||{}).sort((a,b)=>a.no-b.no).map(sc => (
-              <option key={sc.no} value={sc.no}>{sc.no}차시 · {sc.title}</option>
-            ))}
-          </select>
-          <button className="block" onClick={resetSession}>이 차시 초기화</button>
-        </div>
+      <div className="card row" style={{justifyContent:"space-between", alignItems:"center"}}>
+        <div className="muted">지금 보는 <b>{teachSess}차시</b>의 이 학급 활동 데이터만 지웁니다. (코드 필요)</div>
+        <button className="block" onClick={resetSession}>이 차시 초기화</button>
       </div>
 
+      {mode === "loop" && (
       <div className="card row" style={{justifyContent:"space-between", alignItems:"center"}}>
         <div>
           <b>되돌림 최대 횟수</b>
@@ -395,7 +394,9 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
           <button className="ghost" onClick={saveMaxReturns}>{maxDirty ? "저장" : "저장됨"}</button>
         </div>
       </div>
+      )}
 
+      {mode === "judge" && (<>
       <div className="card">
         <div className="row" style={{justifyContent:"space-between"}}>
           <b>1차시 활동3 — 선생님의 자세한 질문으로 AI 답 만들기</b>
@@ -448,14 +449,15 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
           ))
         )}
       </div>
+      </>)}
 
       <div className="card">
-        <b>학생 응답 실시간 — 활동별</b>
+        <b>학생 응답 실시간 — {teachSess}차시</b>
         <div className="muted" style={{margin:"4px 0"}}>
-          각 조가 활동에서 답한 내용입니다. (5초마다 자동 갱신)
+          각 조가 이 차시 활동에서 답한 내용입니다. (5초마다 자동 갱신)
         </div>
         {(() => {
-          const students = resp.filter(r => r.team !== "-");
+          const students = resp.filter(r => r.team !== "-" && r.session === teachSess);
           if (students.length === 0)
             return <div className="muted" style={{marginTop:8}}>아직 응답이 없습니다.</div>;
           const teamNos = [...new Set(students.map(r => r.team))].sort((a,b)=>Number(a)-Number(b));
@@ -487,7 +489,15 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
         </div>
       )}
 
-      {!sel && q.map(item => (
+      {mode === "loop" && (<>
+      <div className="card" style={{background:"#f7f9fc"}}>
+        <b>되돌림 대기열 — {teachSess}차시</b>
+        <span className="muted"> · {q.filter(x=>x.session_no===teachSess).length}건 대기 (5초 자동 갱신)</span>
+        {q.filter(x=>x.session_no===teachSess).length===0 &&
+          <div className="muted" style={{marginTop:6}}>아직 검토할 질문이 없습니다.</div>}
+      </div>
+
+      {!sel && q.filter(x=>x.session_no===teachSess).map(item => (
         <div key={item.submission_id} className="card" onClick={()=>{setSel(item);setMsg(null);}} style={{cursor:"pointer"}}>
           <div className="row" style={{justifyContent:"space-between"}}>
             <b>{item.team_no}조 · {item.session_no}차시 · {item.version}판</b>
@@ -531,10 +541,11 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
               </div>
 
               <div className="muted" style={{marginTop:10}}>
-                까닭 — <b>그 사람이 이 질문을 받으면 무슨 일이 일어나는지</b> 이야기로 써 주세요.
+                까닭 <b>(선택)</b> — 태그만으로도 되돌릴 수 있어요. 쓴다면 <b>그 사람이 이 질문을 받으면
+                무슨 일이 일어나는지</b> 이야기로 써 주세요.
               </div>
               <textarea value={reason} onChange={e=>setReason(e.target.value)}
-                placeholder={"1학년이 이 포스터를 보면 '잔반율'에서 멈출 거예요. 그 아이는 그 말을 들어 본 적이 없거든요."} />
+                placeholder={"(선택) 1학년이 이 포스터를 보면 '잔반율'에서 멈출 거예요. 그 아이는 그 말을 들어 본 적이 없거든요."} />
               {narrHint && (
                 <div className="hint">
                   {"✗ \"[대상]이 부족합니다.\"  ← 이렇게 쓰면 학생은 규칙만 외웁니다.\n○ \"1학년이 이 포스터를 보면 '잔반율'에서 멈출 거예요.\"  ← 이렇게 써 주세요.\n※ 고친 문장을 주지는 마세요. 그것은 학생의 몫입니다."}
@@ -561,6 +572,7 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
           )}
         </div>
       )}
+      </>)}
     </div>
   );
 }
