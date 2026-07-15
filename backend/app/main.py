@@ -1448,4 +1448,5 @@ FRONTEND_HTML = os.path.join(
 
 @app.get("/")
 def index():
-    return FileResponse(FRONTEND_HTML)
+    # 브라우저가 예전 화면을 캐시하지 않도록 — 배포 즉시 새 코드가 보이게 한다.
+    return FileResponse(FRONTEND_HTML, headers={"Cache-Control": "no-store, max-age=0"})

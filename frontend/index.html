@@ -884,7 +884,7 @@ function JudgeModule({ teamId, teamLabel, sess, cfg, onLogout }) {
             선생님의 질문에 대한 AI의 답변과, 여러분의 질문에 대한 AI의 답변이 어떻게 달랐는지
             모둠원끼리 토의해서 적어보세요.
           </div>
-          {(!data.compare || editingCompare) ? (
+          {(!data?.compare || editingCompare) ? (
             <>
               <textarea value={compare} onChange={e=>setCompare(e.target.value)}
                 placeholder="예: 선생님은 우리 반이 무엇을 남기는지 알려 줘서 우리 학교에 맞는 답이 왔어요." />
