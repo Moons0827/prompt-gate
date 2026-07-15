@@ -67,6 +67,7 @@ const cn = c => `${c.school || ""} ${c.name}`.trim();
 
 // AI 답에 남은 마크다운 기호를 화면 표시용으로 걷어낸다(문단 줄바꿈은 유지).
 const stripMd = (t) => (t || "")
+  .replace(/@@\s*(\d+)\s*@@/g, (m,n)=>`\n${n}. `)  // 5개 답 마커(@@1@@) → 번호 줄
   .replace(/^\s*#{1,6}\s*/gm, "")        // 제목(#)
   .replace(/^\s*-{3,}\s*$/gm, "")         // 구분선(---)
   .replace(/\*\*|__/g, "")                // 굵게(**, __)
@@ -140,7 +141,7 @@ function TeamView({ teamId, teamLabel, sess, cfg, onLogout }) {
                   {v.ai_text && (
                     <div style={{marginTop:6}}>
                       <div className="muted">AI의 답</div>
-                      <div className="prompt" style={{background:"#fff", border:"1px solid #cde8d5"}}>{v.ai_text}</div>
+                      <div className="prompt" style={{background:"#fff", border:"1px solid #cde8d5"}}>{stripMd(v.ai_text)}</div>
                     </div>
                   )}
                 </div>
@@ -264,6 +265,7 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
   const [maxReturns, setMaxReturns] = useState(0);   // 되돌림 최대 횟수(0=무제한)
   const [maxDirty, setMaxDirty] = useState(false);
   const [teachSess, setTeachSess] = useState(1);     // 교사가 보는 차시
+  const [busy, setBusy] = useState(false);           // 통과/되돌림 처리 중
   const mode = (sessCfg?.[teachSess] || {}).mode;
 
   const load = async () => {
@@ -319,24 +321,30 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
   };
 
   const act = async (decision) => {
-    const r = await fetch(`${API}/api/teacher/review`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ version_id: sel.version_id, decision, reason, ...tags }),
-    });
-    const d = await r.json();
-    if (!r.ok) { setMsg({ bad: true, text: d.detail }); return; }
-    setMsg({
-      bad: false,
-      text:
-        decision === "passed"
-          ? (d.fidelity_alert
-              ? `⚠ 처치 오염 : ${d.fidelity_alert}\n(기록되었습니다. 연구자에게 알리세요.)`
-              : "통과. 학생 프롬프트가 그대로 전송되었습니다.")
-          : `되돌림 완료. 까닭 유형 : ${d.reason_type}` + (d.nudge ? "\n\n" + d.nudge : ""),
-    });
-    setSel(null); setTags({}); setReason("");
-    load();
+    if (busy) return;                 // 중복 클릭 방지
+    setBusy(true);
+    try {
+      const r = await fetch(`${API}/api/teacher/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version_id: sel.version_id, decision, reason, ...tags }),
+      });
+      const d = await r.json();
+      if (!r.ok) { setMsg({ bad: true, text: d.detail }); return; }
+      setMsg({
+        bad: false,
+        text:
+          decision === "passed"
+            ? (d.fidelity_alert
+                ? `⚠ 처치 오염 : ${d.fidelity_alert}\n(기록되었습니다. 연구자에게 알리세요.)`
+                : "통과. 학생 프롬프트가 그대로 AI에 전송되었습니다.")
+            : `되돌림 완료.` + (d.reason_type && d.reason_type !== "unknown" ? ` 까닭 유형 : ${d.reason_type}` : "") + (d.nudge ? "\n\n" + d.nudge : ""),
+      });
+      setSel(null); setTags({}); setReason("");
+      load();
+    } finally {
+      setBusy(false);
+    }
   };
 
   const resetSession = async () => {
@@ -525,8 +533,10 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
                 통제 학급도 AI 응답을 받습니다 — 차이는 그것 하나뿐입니다.
               </div>
               <div className="row" style={{marginTop:12}}>
-                <button className="pass" onClick={()=>act("passed")}>통과</button>
-                <button className="block" onClick={()=>act("blocked")}>유해 차단</button>
+                <button className="pass" onClick={()=>act("passed")} disabled={busy}>
+                  {busy ? "전송중입니다…" : "통과"}
+                </button>
+                <button className="block" onClick={()=>act("blocked")} disabled={busy}>유해 차단</button>
               </div>
             </div>
           ) : (
@@ -562,11 +572,13 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
                 {atLimit && <b style={{color:"var(--red)"}}> · 되돌림 횟수를 다 썼어요. 통과시키세요.</b>}
               </div>
               <div className="row" style={{marginTop:12}}>
-                <button className="pass" onClick={()=>act("passed")}>통과 (그대로 AI에 전송)</button>
-                <button className="return" onClick={()=>act("returned")} disabled={atLimit}>
+                <button className="pass" onClick={()=>act("passed")} disabled={busy}>
+                  {busy ? "전송중입니다…" : "통과 (그대로 AI에 전송)"}
+                </button>
+                <button className="return" onClick={()=>act("returned")} disabled={busy || atLimit}>
                   되돌림{atLimit ? " (횟수 소진)" : ""}
                 </button>
-                <button className="block" onClick={()=>act("blocked")}>유해 차단</button>
+                <button className="block" onClick={()=>act("blocked")} disabled={busy}>유해 차단</button>
               </div>
             </div>
           )}
@@ -742,6 +754,7 @@ function JudgeModule({ teamId, teamLabel, sess, cfg, onLogout }) {
   const [gen, setGen] = useState(false);
   const [q, setQ] = useState("");        // 우리 조가 AI에게 물어볼 질문
   const [compare, setCompare] = useState("");   // 활동3: 선생님 답과 비교
+  const [editingCompare, setEditingCompare] = useState(false);
   const VERD = [[1,"바로 쓸 수 있다"],[2,"우리 학교엔 안 맞다"],[3,"우리가 못 한다"]];
 
   const load = async () => {
@@ -871,11 +884,22 @@ function JudgeModule({ teamId, teamLabel, sess, cfg, onLogout }) {
             선생님의 질문에 대한 AI의 답변과, 여러분의 질문에 대한 AI의 답변이 어떻게 달랐는지
             모둠원끼리 토의해서 적어보세요.
           </div>
-          <textarea value={compare} onChange={e=>setCompare(e.target.value)}
-            placeholder="예: 선생님은 우리 반이 무엇을 남기는지 알려 줘서 우리 학교에 맞는 답이 왔어요." />
-          <div className="row" style={{marginTop:8}}>
-            <button className="primary" onClick={saveCompare} disabled={!compare.trim()}>비교 저장</button>
-          </div>
+          {(!data.compare || editingCompare) ? (
+            <>
+              <textarea value={compare} onChange={e=>setCompare(e.target.value)}
+                placeholder="예: 선생님은 우리 반이 무엇을 남기는지 알려 줘서 우리 학교에 맞는 답이 왔어요." />
+              <div className="row" style={{marginTop:8}}>
+                <button className="primary" disabled={!compare.trim()}
+                  onClick={async()=>{ await saveCompare(); setEditingCompare(false); }}>비교 저장</button>
+              </div>
+            </>
+          ) : (
+            <div style={{marginTop:6}}>
+              <div className="prompt" style={{background:"#fff", border:"1px solid #cde8d5"}}>{data.compare}</div>
+              <button className="ghost" style={{marginTop:8}}
+                onClick={()=>{ setCompare(data.compare); setEditingCompare(true); }}>수정</button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1083,6 +1107,7 @@ function ActivitySection({ teamId, sess }) {
   const [data, setData] = useState(null);
   const [edit, setEdit] = useState({});     // {idx:{fit,reason}}
   const [final, setFinal] = useState("");
+  const [editingFinal, setEditingFinal] = useState(false);
   const [msg, setMsg] = useState(null);
 
   const load = async () => {
@@ -1145,8 +1170,19 @@ function ActivitySection({ teamId, sess }) {
       ))}
       {msg && <div className="hint" style={{marginTop:8}}>{msg}</div>}
       <div className="muted" style={{marginTop:14}}>최종적으로 선정한 활동을 적어봅시다.</div>
-      <textarea value={final} onChange={e=>setFinal(e.target.value)} placeholder="우리 조가 실제로 할 활동을 적어요." />
-      <div><button className="primary" style={{marginTop:8}} onClick={saveFinal} disabled={!final.trim()}>최종 선정 저장</button></div>
+      {(!data.final || editingFinal) ? (
+        <>
+          <textarea value={final} onChange={e=>setFinal(e.target.value)} placeholder="우리 조가 실제로 할 활동을 적어요." />
+          <div><button className="primary" style={{marginTop:8}} disabled={!final.trim()}
+            onClick={async()=>{ await saveFinal(); setEditingFinal(false); }}>최종 선정 저장</button></div>
+        </>
+      ) : (
+        <div>
+          <div className="prompt" style={{background:"#fff", border:"1px solid #cde8d5"}}>{data.final}</div>
+          <button className="ghost" style={{marginTop:8}}
+            onClick={()=>{ setFinal(data.final); setEditingFinal(true); }}>수정</button>
+        </div>
+      )}
     </div>
   );
 }
