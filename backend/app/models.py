@@ -53,6 +53,8 @@ class Classroom(Base):
     school: Mapped[str] = mapped_column(String(60))
     name: Mapped[str] = mapped_column(String(30))          # 예: 5-3
     condition: Mapped[Condition] = mapped_column(Enum(Condition))
+    # 한 질문을 최대 몇 번까지 되돌릴 수 있는지. 0 = 무제한(기본). 교사가 정한다.
+    max_returns: Mapped[int] = mapped_column(Integer, default=0)
     teams: Mapped[list["Team"]] = relationship(back_populates="classroom")
 
 

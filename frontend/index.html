@@ -150,6 +150,16 @@ function TeamView({ teamId, teamLabel, sess, cfg, onLogout }) {
         </div>
       )}
 
+      {active === "returned" && (
+        <div className="card" style={{background:"#fff3f0", border:"2px solid #e88"}}>
+          <b style={{fontSize:16}}>✋ 선생님이 질문을 되돌려보냈어요!</b>
+          <div className="muted" style={{marginTop:6}}>
+            위 <b>우리 조의 질문과 대화</b>에서 <b>돌아온 까닭</b>과 빠진 태그를 확인하고,
+            아래에서 질문을 고쳐 다시 보내세요.
+          </div>
+        </div>
+      )}
+
       {active === "pending" ? (
         <div className="card warn">
           <b>선생님이 보고 계세요.</b>
@@ -251,10 +261,14 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
   const [ta, setTa] = useState(null);
   const [jq, setJq] = useState([]);
   const [resp, setResp] = useState([]);   // 학생 응답 실시간
+  const [maxReturns, setMaxReturns] = useState(0);   // 되돌림 최대 횟수(0=무제한)
+  const [maxDirty, setMaxDirty] = useState(false);
 
   const load = async () => {
     const r = await fetch(`${API}/api/teacher/queue/${classroomId}`);
     setQ(await r.json());
+    const rs = await fetch(`${API}/api/teacher/settings/${classroomId}`);
+    if (rs.ok && !maxDirty) setMaxReturns((await rs.json()).max_returns);
     const r2 = await fetch(`${API}/api/teacher/judge-questions/${classroomId}`);
     if (r2.ok) setJq(await r2.json());
     // 현재 만들어 둔 교사 답과 전송 여부를 유지(새로고침해도 남게).
@@ -291,6 +305,15 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
     const d = await r.json().catch(()=>({}));
     if (!r.ok) { setTa(prev => ({...prev, error: d.detail || "전송 실패"})); return; }
     setTa(prev => ({...prev, published:true, dirty:false, error:undefined}));
+  };
+
+  const saveMaxReturns = async () => {
+    const r = await fetch(`${API}/api/teacher/settings/${classroomId}`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({max_returns: maxReturns})});
+    if (!r.ok) { setMsg({bad:true, text:"되돌림 횟수 저장 실패"}); return; }
+    setMaxDirty(false);
+    setMsg({bad:false, text:`되돌림 최대 횟수를 ${maxReturns===0?"무제한":maxReturns+"번"}으로 저장했어요.`});
   };
 
   const act = async (decision) => {
@@ -332,6 +355,7 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
 
   const isControl = sel?.condition === "control";
   const narrHint = reason.length > 0 && reason.length < 20;
+  const atLimit = !!sel && maxReturns > 0 && (sel.return_count || 0) >= maxReturns;
 
   return (
     <div>
@@ -356,6 +380,19 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
             ))}
           </select>
           <button className="block" onClick={resetSession}>이 차시 초기화</button>
+        </div>
+      </div>
+
+      <div className="card row" style={{justifyContent:"space-between", alignItems:"center"}}>
+        <div>
+          <b>되돌림 최대 횟수</b>
+          <span className="muted"> · 한 질문을 최대 몇 번까지 되돌릴 수 있는지 (0 = 무제한)</span>
+        </div>
+        <div className="row" style={{alignItems:"center"}}>
+          <input type="number" min="0" max="20" value={maxReturns}
+            onChange={e=>{setMaxReturns(Number(e.target.value)); setMaxDirty(true);}}
+            style={{width:70, padding:8, borderRadius:8, border:"1px solid var(--line)", font:"inherit"}} />
+          <button className="ghost" onClick={saveMaxReturns}>{maxDirty ? "저장" : "저장됨"}</button>
         </div>
       </div>
 
@@ -455,7 +492,7 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
           <div className="row" style={{justifyContent:"space-between"}}>
             <b>{item.team_no}조 · {item.session_no}차시 · {item.version}판</b>
             <span className="muted">
-              {item.condition === "treatment" ? "처치" : "통제"} · 되돌림 {item.return_count}회
+              {item.condition === "treatment" ? "처치" : "통제"} · 되돌림 {item.return_count}{maxReturns>0?`/${maxReturns}`:""}회
             </span>
           </div>
           <div className="prompt" style={{marginTop:8}}>{item.prompt}</div>
@@ -509,9 +546,15 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
                 <div className="muted">학생의 질문을 대신 고칠 수 없습니다. 시도하면 기록됩니다.</div>
               </div>
 
+              <div className="muted" style={{marginTop:10}}>
+                되돌림 {sel.return_count}{maxReturns>0?`/${maxReturns}`:""}회
+                {atLimit && <b style={{color:"var(--red)"}}> · 되돌림 횟수를 다 썼어요. 통과시키세요.</b>}
+              </div>
               <div className="row" style={{marginTop:12}}>
                 <button className="pass" onClick={()=>act("passed")}>통과 (그대로 AI에 전송)</button>
-                <button className="return" onClick={()=>act("returned")}>되돌림</button>
+                <button className="return" onClick={()=>act("returned")} disabled={atLimit}>
+                  되돌림{atLimit ? " (횟수 소진)" : ""}
+                </button>
                 <button className="block" onClick={()=>act("blocked")}>유해 차단</button>
               </div>
             </div>

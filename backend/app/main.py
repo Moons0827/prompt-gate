@@ -384,7 +384,8 @@ async def review(body: ReviewIn, s: Session = Depends(db)):
     if not v:
         raise HTTPException(404, "없는 버전")
     sub = v.submission
-    cond = s.get(Team, sub.team_id).classroom.condition
+    classroom = s.get(Team, sub.team_id).classroom
+    cond = classroom.condition
 
     # ── 불변식 1 : 교사는 대신 고칠 수 없다
     if body.edited_prompt is not None and check_invariant(
@@ -416,6 +417,14 @@ async def review(body: ReviewIn, s: Session = Depends(db)):
             400,
             "통제 조건에서는 교육적 되돌림을 할 수 없습니다. "
             "통과 또는 유해 차단만 가능합니다.",
+        )
+
+    # ── 되돌림 횟수 제한(교사 설정, 0=무제한)
+    if dec == Status.RETURNED and classroom.max_returns and sub.return_count >= classroom.max_returns:
+        raise HTTPException(
+            400,
+            f"이 조는 되돌림을 이미 {sub.return_count}번 했습니다"
+            f"(최대 {classroom.max_returns}번). 이제 통과시켜 주세요.",
         )
 
     rtype, rscore = ReasonType.UNKNOWN, 0.0
@@ -653,6 +662,30 @@ async def judge_generate(body: JudgeGenIn, s: Session = Depends(db)):
         s.commit()
         return {"question": question,
                 "items": [{"index": i, "text": t} for i, t in enumerate(items, 1)]}
+
+
+@app.get("/api/teacher/settings/{classroom_id}")
+def teacher_settings_get(classroom_id: int, s: Session = Depends(db)):
+    cr = s.get(Classroom, classroom_id)
+    if not cr:
+        raise HTTPException(404, "없는 학급")
+    return {"max_returns": cr.max_returns}
+
+
+class SettingsIn(BaseModel):
+    max_returns: int = Field(ge=0, le=20)
+
+
+@app.post("/api/teacher/settings/{classroom_id}")
+def teacher_settings_set(classroom_id: int, body: SettingsIn, s: Session = Depends(db)):
+    """되돌림 최대 횟수 설정(0=무제한)."""
+    cr = s.get(Classroom, classroom_id)
+    if not cr:
+        raise HTTPException(404, "없는 학급")
+    cr.max_returns = body.max_returns
+    log(s, "set_max_returns", value=body.max_returns)
+    s.commit()
+    return {"ok": True, "max_returns": cr.max_returns}
 
 
 @app.get("/api/teacher/judge-questions/{classroom_id}")
