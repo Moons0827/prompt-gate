@@ -956,6 +956,7 @@ def _survey_agg(s: Session, classroom_id: int) -> dict:
     rows = s.scalars(select(SurveyResponse).where(
         SurveyResponse.classroom_id == classroom_id)).all()
     reasons: dict[str, int] = {}
+    notes = []
     for r in rows:
         try:
             rd = json.loads(r.reasons or "{}")
@@ -963,24 +964,27 @@ def _survey_agg(s: Session, classroom_id: int) -> dict:
             rd = {}
         for k, v in rd.items():
             reasons[k] = reasons.get(k, 0) + max(0, int(v or 0))
+        if (r.etc_note or "").strip():
+            notes.append(r.etc_note.strip())
     reasons_sorted = sorted([(k, v) for k, v in reasons.items() if v > 0], key=lambda x: -x[1])
     return {
         "teams": len(rows),
         "members": sum(r.members for r in rows),
         "left": sum(r.left_count for r in rows),
         "reasons": [{"why": w, "count": c} for w, c in reasons_sorted],
+        "etc_notes": notes,
     }
 
 
 def _my_survey(s: Session, team_id: int) -> dict:
     row = s.scalar(select(SurveyResponse).where(SurveyResponse.team_id == team_id))
     if not row:
-        return {"members": 0, "reasons": {}}
+        return {"members": 0, "reasons": {}, "etc_note": ""}
     try:
         rd = json.loads(row.reasons or "{}")
     except Exception:
         rd = {}
-    return {"members": row.members, "reasons": rd}
+    return {"members": row.members, "reasons": rd, "etc_note": row.etc_note or ""}
 
 
 def _survey_cards(s: Session, classroom_id: int) -> list[dict]:
@@ -992,20 +996,21 @@ def _survey_cards(s: Session, classroom_id: int) -> list[dict]:
               "text": f"오늘 우리 반 {a['members']}명 중 {a['left']}명이 급식을 남겼다."}]
     idx = 2
     for r in a["reasons"]:
-        cards.append({"id": idx, "type": "이유별",
-                      "text": f"{r['count']}명은 {r['why']} 남겼다."})
+        why = "다른 이유로" if r["why"] == "기타" else r["why"]
+        cards.append({"id": idx, "type": "이유별", "text": f"{r['count']}명은 {why} 남겼다."})
+        idx += 1
+    for note in a.get("etc_notes", [])[:3]:
+        cards.append({"id": idx, "type": "친구의 말", "text": f"한 조가 '{note}'라고 적었다."})
         idx += 1
     return cards
 
 
-def _class_cards(s: Session, classroom_id: int) -> list[dict]:
+def _class_cards(s: Session, classroom_id: int) -> tuple[list[dict], str]:
+    """(카드, 출처). 교사가 전달/입력한 카드가 있으면 그것, 없으면 예시."""
     raw = _cs_get(s, classroom_id, "data3_cards")
-    if raw.strip():                       # 교사가 직접 입력했으면 그것 우선
-        return _parse_cards(raw)
-    survey = _survey_cards(s, classroom_id)   # 없으면 조사 집계 카드
-    if survey:
-        return survey
-    return DATA3_CARDS                     # 그것도 없으면 예시
+    if raw.strip():
+        return _parse_cards(raw), "class"     # 교사가 전달(또는 입력)한 우리 반 카드
+    return DATA3_CARDS, "default"             # 아직 전달 전 — 예시 카드
 
 
 @app.get("/api/teacher/data3/cards/{classroom_id}")
@@ -1038,6 +1043,7 @@ class SurveyIn(BaseModel):
     team_id: int
     members: int = Field(ge=0, le=60)
     reasons: dict[str, int] = {}   # {이유: 인원}
+    etc_note: str = ""             # '기타' 의견(교사가 받음)
 
 
 @app.post("/api/team/survey")
@@ -1052,15 +1058,61 @@ def survey_submit(body: SurveyIn, s: Session = Depends(db)):
     if row:
         row.members, row.left_count = body.members, left
         row.reasons = json.dumps(reasons, ensure_ascii=False)
+        row.etc_note = body.etc_note.strip()
     else:
         s.add(SurveyResponse(
             classroom_id=team.classroom_id, team_id=body.team_id,
             members=body.members, left_count=left,
             reasons=json.dumps(reasons, ensure_ascii=False),
+            etc_note=body.etc_note.strip(),
         ))
     log(s, "survey", team=body.team_id, members=body.members, left=left)
     s.commit()
     return {"ok": True, "survey": _survey_agg(s, team.classroom_id)}
+
+
+@app.get("/api/teacher/data3/survey/{classroom_id}")
+def data3_survey_teacher(classroom_id: int, s: Session = Depends(db)):
+    """교사용: 조별 조사 결과 + 반 전체 집계 + 기타 의견 + 현재 전달된 카드."""
+    cr = s.get(Classroom, classroom_id)
+    if not cr:
+        raise HTTPException(404, "없는 학급")
+    rows = s.execute(
+        select(Team.number, SurveyResponse)
+        .join(SurveyResponse, SurveyResponse.team_id == Team.id)
+        .where(SurveyResponse.classroom_id == classroom_id)
+        .order_by(Team.number)
+    ).all()
+    per_team = []
+    for num, r in rows:
+        try:
+            rd = json.loads(r.reasons or "{}")
+        except Exception:
+            rd = {}
+        per_team.append({"team_no": num, "members": r.members, "left": r.left_count,
+                         "reasons": rd, "etc_note": r.etc_note or ""})
+    cards, source = _class_cards(s, classroom_id)
+    return {
+        "survey": _survey_agg(s, classroom_id),
+        "per_team": per_team,
+        "delivered": source == "class",   # 이미 학생에게 전달됐는지
+    }
+
+
+@app.post("/api/teacher/data3/survey-to-cards/{classroom_id}")
+def data3_survey_to_cards(classroom_id: int, s: Session = Depends(db)):
+    """교사용: 조사 집계를 '우리 반 정보 카드'로 만들어 학생에게 전달한다."""
+    cr = s.get(Classroom, classroom_id)
+    if not cr:
+        raise HTTPException(404, "없는 학급")
+    cards = _survey_cards(s, classroom_id)
+    if not cards:
+        raise HTTPException(400, "아직 조사 결과가 없습니다. 조들이 조사를 먼저 저장해야 합니다.")
+    text = "\n".join(f"[{c['type']}] {c['text']}" for c in cards)
+    _cs_set(s, classroom_id, "data3_cards", text)
+    log(s, "data3_survey_deliver", classroom=classroom_id, cards=len(cards))
+    s.commit()
+    return {"ok": True, "text": text, "cards": cards}
 
 
 @app.get("/api/team/{team_id}/data3")
@@ -1069,11 +1121,13 @@ def data3_state(team_id: int, s: Session = Depends(db)):
     if not team:
         raise HTTPException(404, "없는 조")
     sel = _n3_get(s, team_id, "cards")
+    cards, source = _class_cards(s, team.classroom_id)
     return {
         "survey": _survey_agg(s, team.classroom_id),
         "my_survey": _my_survey(s, team_id),
         "why_options": DATA3_WHY,
-        "cards": _class_cards(s, team.classroom_id),
+        "cards": cards,
+        "cards_source": source,
         "questions": DATA3_QUESTIONS,
         "selected": [int(x) for x in sel.split(",") if x.strip().isdigit()],
         "cards_reason": _n3_get(s, team_id, "cards_reason"),

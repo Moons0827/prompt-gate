@@ -15,6 +15,7 @@ with engine.begin() as _conn:
     for _sqlstr, _label in [
         ("ALTER TABLE teacher_answers ADD COLUMN published BOOLEAN DEFAULT 0", "teacher_answers.published"),
         ("ALTER TABLE classrooms ADD COLUMN max_returns INTEGER DEFAULT 0", "classrooms.max_returns"),
+        ("ALTER TABLE survey_responses ADD COLUMN etc_note TEXT DEFAULT ''", "survey_responses.etc_note"),
     ]:
         try:
             _conn.execute(_sql(_sqlstr))

@@ -305,6 +305,7 @@ class SurveyResponse(Base):
     members: Mapped[int] = mapped_column(Integer, default=0)      # 우리 조 인원
     left_count: Mapped[int] = mapped_column(Integer, default=0)   # 남긴 사람 수(이유 합)
     reasons: Mapped[str] = mapped_column(Text, default="{}")      # {이유: 인원} JSON
+    etc_note: Mapped[str] = mapped_column(Text, default="")       # '기타' 의견(교사가 받는다)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)
 
 
