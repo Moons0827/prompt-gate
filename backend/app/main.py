@@ -955,39 +955,45 @@ def _cs_set(s: Session, classroom_id: int, key: str, text: str) -> None:
 def _survey_agg(s: Session, classroom_id: int) -> dict:
     rows = s.scalars(select(SurveyResponse).where(
         SurveyResponse.classroom_id == classroom_id)).all()
-    left = [r for r in rows if r.left]
     reasons: dict[str, int] = {}
-    whats: dict[str, int] = {}
-    for r in left:
-        if r.why:
-            reasons[r.why] = reasons.get(r.why, 0) + 1
-        if r.what.strip():
-            whats[r.what.strip()] = whats.get(r.what.strip(), 0) + 1
-    reasons_sorted = sorted(reasons.items(), key=lambda x: -x[1])
+    for r in rows:
+        try:
+            rd = json.loads(r.reasons or "{}")
+        except Exception:
+            rd = {}
+        for k, v in rd.items():
+            reasons[k] = reasons.get(k, 0) + max(0, int(v or 0))
+    reasons_sorted = sorted([(k, v) for k, v in reasons.items() if v > 0], key=lambda x: -x[1])
     return {
-        "total": len(rows),
-        "left": len(left),
+        "teams": len(rows),
+        "members": sum(r.members for r in rows),
+        "left": sum(r.left_count for r in rows),
         "reasons": [{"why": w, "count": c} for w, c in reasons_sorted],
-        "whats": [{"what": w, "count": c} for w, c in sorted(whats.items(), key=lambda x: -x[1])],
     }
 
 
+def _my_survey(s: Session, team_id: int) -> dict:
+    row = s.scalar(select(SurveyResponse).where(SurveyResponse.team_id == team_id))
+    if not row:
+        return {"members": 0, "reasons": {}}
+    try:
+        rd = json.loads(row.reasons or "{}")
+    except Exception:
+        rd = {}
+    return {"members": row.members, "reasons": rd}
+
+
 def _survey_cards(s: Session, classroom_id: int) -> list[dict]:
-    """조사 응답을 '우리 반 정보 카드'로 자동 정리한다."""
+    """조별 조사를 합산해 '우리 반 정보 카드'로 자동 정리한다."""
     a = _survey_agg(s, classroom_id)
-    if a["total"] == 0:
+    if a["teams"] == 0 or (a["members"] == 0 and a["left"] == 0):
         return []
-    cards = [
-        {"id": 1, "type": "숫자", "text": f"오늘 우리 반에서 {a['left']}명이 급식을 남겼다."},
-    ]
+    cards = [{"id": 1, "type": "숫자",
+              "text": f"오늘 우리 반 {a['members']}명 중 {a['left']}명이 급식을 남겼다."}]
     idx = 2
     for r in a["reasons"]:
         cards.append({"id": idx, "type": "이유별",
                       "text": f"{r['count']}명은 {r['why']} 남겼다."})
-        idx += 1
-    for w in a["whats"][:2]:
-        cards.append({"id": idx, "type": "친구의 말",
-                      "text": f"'{w['what']}'을(를) 남겼다는 친구가 {w['count']}명 있었다."})
         idx += 1
     return cards
 
@@ -1030,22 +1036,29 @@ def data3_cards_set(classroom_id: int, body: ClassCardsIn, s: Session = Depends(
 
 class SurveyIn(BaseModel):
     team_id: int
-    left: bool
-    what: str = ""
-    why: str = ""
+    members: int = Field(ge=0, le=60)
+    reasons: dict[str, int] = {}   # {이유: 인원}
 
 
 @app.post("/api/team/survey")
 def survey_submit(body: SurveyIn, s: Session = Depends(db)):
-    """3차시 도입: 학생 한 명의 '오늘 급식 조사' 응답을 낸다(반 전체로 집계)."""
+    """3차시 도입: 우리 조 조사 결과를 낸다(조당 하나, 덮어쓴다). 반 전체로 합산."""
     team = s.get(Team, body.team_id)
     if not team:
         raise HTTPException(404, "없는 조")
-    s.add(SurveyResponse(
-        classroom_id=team.classroom_id, team_id=body.team_id,
-        left=bool(body.left), what=body.what.strip(), why=body.why.strip(),
-    ))
-    log(s, "survey", team=body.team_id, left=bool(body.left))
+    reasons = {k: max(0, int(v or 0)) for k, v in body.reasons.items() if int(v or 0) > 0}
+    left = sum(reasons.values())
+    row = s.scalar(select(SurveyResponse).where(SurveyResponse.team_id == body.team_id))
+    if row:
+        row.members, row.left_count = body.members, left
+        row.reasons = json.dumps(reasons, ensure_ascii=False)
+    else:
+        s.add(SurveyResponse(
+            classroom_id=team.classroom_id, team_id=body.team_id,
+            members=body.members, left_count=left,
+            reasons=json.dumps(reasons, ensure_ascii=False),
+        ))
+    log(s, "survey", team=body.team_id, members=body.members, left=left)
     s.commit()
     return {"ok": True, "survey": _survey_agg(s, team.classroom_id)}
 
@@ -1058,6 +1071,7 @@ def data3_state(team_id: int, s: Session = Depends(db)):
     sel = _n3_get(s, team_id, "cards")
     return {
         "survey": _survey_agg(s, team.classroom_id),
+        "my_survey": _my_survey(s, team_id),
         "why_options": DATA3_WHY,
         "cards": _class_cards(s, team.classroom_id),
         "questions": DATA3_QUESTIONS,

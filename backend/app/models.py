@@ -293,16 +293,19 @@ class ActivityOption(Base):
 
 
 class SurveyResponse(Base):
-    """3차시 도입: 학생 각자가 낸 '오늘 급식 조사' 응답. 반 전체로 집계한다."""
+    """3차시 도입 조사: 조당 한 줄(덮어쓴다). 반 전체로 합산한다.
+
+    조가 '우리 조 인원'과 '이유별 남긴 사람 수'를 입력한다.
+    """
 
     __tablename__ = "survey_responses"
     id: Mapped[int] = mapped_column(primary_key=True)
     classroom_id: Mapped[int] = mapped_column(ForeignKey("classrooms.id"))
-    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
-    left: Mapped[bool] = mapped_column(Boolean, default=False)   # 남겼다
-    what: Mapped[str] = mapped_column(Text, default="")          # 무엇을
-    why: Mapped[str] = mapped_column(Text, default="")           # 왜
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
+    members: Mapped[int] = mapped_column(Integer, default=0)      # 우리 조 인원
+    left_count: Mapped[int] = mapped_column(Integer, default=0)   # 남긴 사람 수(이유 합)
+    reasons: Mapped[str] = mapped_column(Text, default="{}")      # {이유: 인원} JSON
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)
 
 
 class ClassSetting(Base):

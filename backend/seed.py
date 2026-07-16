@@ -21,6 +21,16 @@ with engine.begin() as _conn:
             print("마이그레이션:", _label, "추가")
         except Exception:
             pass  # 이미 있으면 통과
+    # survey_responses 스키마 변경(개인별→조별): 옛 컬럼이면 테이블을 새로 만든다.
+    try:
+        cols = [r[1] for r in _conn.execute(_sql("PRAGMA table_info(survey_responses)")).fetchall()]
+        if cols and "members" not in cols:
+            _conn.execute(_sql("DROP TABLE survey_responses"))
+            print("마이그레이션: survey_responses 재생성(조별)")
+    except Exception:
+        pass
+
+Base.metadata.create_all(engine)   # 드롭된 테이블 재생성
 
 s = SessionLocal()
 
