@@ -268,7 +268,20 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
   const [busy, setBusy] = useState(false);           // 통과/되돌림 처리 중
   const [data3Cards, setData3Cards] = useState("");  // 3차시 정보 카드 입력
   const [data3Default, setData3Default] = useState("");
+  const [activeSession, setActiveSession] = useState(0);   // 학생에게 열린 차시(0=전체)
   const mode = (sessCfg?.[teachSess] || {}).mode;
+
+  useEffect(() => {   // 현재 열린 차시를 불러와 그 차시를 본다
+    fetch(`${API}/api/classrooms`).then(r=>r.json()).then(cs=>{
+      const c = (cs||[]).find(x=>x.classroom_id===Number(classroomId));
+      if (c) { setActiveSession(c.active_session||0); if (c.active_session>0) setTeachSess(c.active_session); }
+    });
+  }, [classroomId]);
+  const openSession = async (n) => {
+    await fetch(`${API}/api/teacher/active-session/${classroomId}`, {method:"POST",
+      headers:{"Content-Type":"application/json"}, body:JSON.stringify({session_no:n})});
+    setActiveSession(n);
+  };
 
   useEffect(() => {   // 3차시 정보 카드는 폴링과 분리해 한 번만 불러온다(편집 보호)
     fetch(`${API}/api/teacher/data3/cards/${classroomId}`).then(r=>r.ok?r.json():null).then(dd=>{
@@ -384,14 +397,19 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
   return (
     <div>
       <div className="card row" style={{justifyContent:"space-between", alignItems:"center"}}>
-        <div className="row" style={{alignItems:"center", gap:10}}>
+        <div className="row" style={{alignItems:"center", gap:10, flexWrap:"wrap"}}>
           <b>{classLabel}</b>
-          <select value={teachSess} onChange={e=>{setTeachSess(Number(e.target.value)); setSel(null);}}
+          <select value={teachSess} onChange={e=>{const n=Number(e.target.value); setTeachSess(n); setSel(null); openSession(n);}}
             style={{padding:8, borderRadius:8, border:"1px solid var(--line)", font:"inherit"}}>
             {Object.values(sessCfg||{}).sort((a,b)=>a.no-b.no).map(sc => (
               <option key={sc.no} value={sc.no}>{sc.no}차시 · {sc.title}</option>
             ))}
           </select>
+          <span className="badge" style={{background: activeSession>0?"#2a8a4a":"#999", color:"#fff", padding:"2px 8px", borderRadius:6, fontSize:12}}>
+            {activeSession>0 ? `학생에게 ${activeSession}차시 열림` : "학생 전체 열림"}
+          </span>
+          {activeSession>0 &&
+            <button className="ghost" onClick={()=>openSession(0)}>전체 열기(제한 해제)</button>}
         </div>
         <div className="row">
           <button className="ghost" onClick={load}>새로고침</button>
@@ -1432,13 +1450,18 @@ function StudentLogin({ sessCfg, presetClass, onEnter, onBack }) {
       if (first) setTeamId(String(first.teams[0].team_id));
     });
   }, []);
+  const classOf = (tid) => classes.find(c => c.teams.some(t => String(t.team_id) === String(tid)));
+  const selClass = classOf(teamId);
+  const locked = selClass && selClass.active_session > 0 ? selClass.active_session : 0;
+  useEffect(() => { if (locked) setSess(locked); }, [locked]);
   const labelFor = (tid) => {
     for (const c of classes)
       for (const t of c.teams)
         if (String(t.team_id) === String(tid)) return `${cn(c)} · ${t.number}조`;
     return "";
   };
-  const enter = () => { if (teamId) onEnter({ teamId, teamLabel: labelFor(teamId), sess: Number(sess) }); };
+  const effSess = locked || Number(sess);
+  const enter = () => { if (teamId) onEnter({ teamId, teamLabel: labelFor(teamId), sess: effSess, classroomId: selClass?.classroom_id }); };
   return (
     <div className="card" style={{maxWidth:480}}>
       <b>학생 (조) 로그인{presetClass ? ` — ${presetClass}학급` : ""}</b>
@@ -1455,12 +1478,19 @@ function StudentLogin({ sessCfg, presetClass, onEnter, onBack }) {
         </select>
       </label>
       <label style={{display:"block", marginBottom:16}}>차시<br/>
-        <select value={sess} onChange={e=>setSess(Number(e.target.value))} style={{width:"100%", marginTop:4}}>
-          {sessions.length === 0 && <option value={1}>불러오는 중…</option>}
-          {sessions.map(sc => (
-            <option key={sc.no} value={sc.no}>{sc.no}차시 · {sc.title}</option>
-          ))}
-        </select>
+        {locked ? (
+          <div style={{marginTop:4}}>
+            <div className="prompt">{locked}차시 · {(sessCfg[locked]||{}).title||""}</div>
+            <div className="muted" style={{marginTop:4}}>선생님이 지금 <b>{locked}차시</b>만 열어 두었어요.</div>
+          </div>
+        ) : (
+          <select value={sess} onChange={e=>setSess(Number(e.target.value))} style={{width:"100%", marginTop:4}}>
+            {sessions.length === 0 && <option value={1}>불러오는 중…</option>}
+            {sessions.map(sc => (
+              <option key={sc.no} value={sc.no}>{sc.no}차시 · {sc.title}</option>
+            ))}
+          </select>
+        )}
       </label>
       <div className="row">
         <button className="primary" onClick={enter} disabled={!teamId}>입장하기</button>
@@ -1534,8 +1564,28 @@ function App() {
   }, []);
   const home = () => { setCreds({}); setPresetClass(null); setScreen("home"); };
 
+  // 진행 중 선생님이 연 차시가 바뀌면 학생을 막는다.
+  const [gate, setGate] = useState(0);
+  useEffect(() => {
+    if (screen !== "team" || !creds.classroomId) { setGate(0); return; }
+    const check = () => fetch(`${API}/api/classrooms`).then(r=>r.json()).then(cs => {
+      const c = (cs||[]).find(x => x.classroom_id === Number(creds.classroomId));
+      const a = c ? (c.active_session||0) : 0;
+      setGate(a > 0 && a !== Number(creds.sess) ? a : 0);
+    }).catch(()=>{});
+    check(); const t = setInterval(check, 5000); return () => clearInterval(t);
+  }, [screen, creds.classroomId, creds.sess]);
+
   // 차시가 기능을 고정한다 — 로그인에서 고른 차시의 모드로 화면을 라우팅
   const studentModule = () => {
+    if (gate) return (
+      <div className="card" style={{textAlign:"center", padding:"28px 18px"}}>
+        <div style={{fontSize:34}}>⏳</div>
+        <b style={{display:"block", margin:"8px 0"}}>선생님이 지금은 {gate}차시를 열었어요.</b>
+        <div className="muted">이 차시는 잠시 닫혔습니다. 처음으로 가서 {gate}차시로 다시 들어오세요.</div>
+        <button className="primary" style={{marginTop:14}} onClick={home}>처음으로</button>
+      </div>
+    );
     const cfg = sessCfg[creds.sess] || {};
     const p = { ...creds, cfg, onLogout: home };
     switch (cfg.mode) {

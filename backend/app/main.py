@@ -222,6 +222,8 @@ def classrooms(s: Session = Depends(db)):
                 "school": cr.school,
                 "name": cr.name,
                 "condition": cr.condition.value,
+                # 교사가 연 차시. 0 = 전체 열림(제한 없음). 학생은 이 차시만 할 수 있다.
+                "active_session": int(_cs_get(s, cr.id, "active_session") or 0),
                 "teams": [
                     {"team_id": t.id, "number": t.number}
                     for t in sorted(cr.teams, key=lambda t: t.number)
@@ -229,6 +231,22 @@ def classrooms(s: Session = Depends(db)):
             }
         )
     return out
+
+
+class ActiveSessionIn(BaseModel):
+    session_no: int = Field(ge=0, le=8)   # 0 = 전체 열기
+
+
+@app.post("/api/teacher/active-session/{classroom_id}")
+def set_active_session(classroom_id: int, body: ActiveSessionIn, s: Session = Depends(db)):
+    """교사가 학생에게 열 차시를 정한다(0=전체). 학생은 이 차시만 접속·활동한다."""
+    cr = s.get(Classroom, classroom_id)
+    if not cr:
+        raise HTTPException(404, "없는 학급")
+    _cs_set(s, classroom_id, "active_session", str(body.session_no))
+    log(s, "set_active_session", classroom=classroom_id, value=body.session_no)
+    s.commit()
+    return {"ok": True, "active_session": body.session_no}
 
 
 class SubmitIn(BaseModel):
