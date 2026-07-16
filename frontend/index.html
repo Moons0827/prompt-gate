@@ -1162,6 +1162,10 @@ function DataModule({ teamId, teamLabel, sess, cfg, onLogout }) {
   const [rewriteReason, setRewriteReason] = useState("");
   const [trace, setTrace] = useState({box:"",line:"",tri:""});
   const [summary, setSummary] = useState(["","",""]);
+  const [sLeft, setSLeft] = useState(null);   // 도입 조사: 남겼나요
+  const [sWhat, setSWhat] = useState("");
+  const [sWhy, setSWhy] = useState("");
+  const [sending, setSending] = useState(false);
   const [gen, setGen] = useState(false);
   const [genR, setGenR] = useState(false);
   const [msg, setMsg] = useState("");
@@ -1203,6 +1207,14 @@ function DataModule({ teamId, teamLabel, sess, cfg, onLogout }) {
     setGenR(false); load();
   };
   const saveRewriteReason = async()=>{ await note("rewrite_reason",rewriteReason); setMsg("고친 까닭을 저장했어요."); load(); };
+  const submitSurvey = async()=>{
+    if (sLeft===null) return;
+    setSending(true);
+    await fetch(`${API}/api/team/survey`,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({team_id:Number(teamId), left:sLeft, what:sLeft?sWhat:"", why:sLeft?sWhy:""})});
+    setSLeft(null); setSWhat(""); setSWhy(""); setSending(false);
+    setMsg("응답을 냈어요. 우리 반 전체 결과에 반영됩니다."); load();
+  };
   const saveTrace = async()=>{ await Promise.all([note("trace_box",trace.box),note("trace_line",trace.line),note("trace_tri",trace.tri)]); setMsg("데이터 흔적을 저장했어요."); load(); };
   const saveSummary = async()=>{ await Promise.all([note("sum1",summary[0]),note("sum2",summary[1]),note("sum3",summary[2])]); setMsg("정리를 저장했어요."); load(); };
   const setSum = (i,v)=>setSummary(summary.map((x,ix)=>ix===i?v:x));
@@ -1217,9 +1229,52 @@ function DataModule({ teamId, teamLabel, sess, cfg, onLogout }) {
       {cfg.intro && <div className="card" style={{background:"#eef2f8"}}>{cfg.intro}</div>}
 
       <div className="card">
+        <b>도입 · 오늘 급식 조사</b>
+        <div className="muted" style={{margin:"4px 0"}}>
+          우리 반 친구들이 <b>한 명씩</b> 답하면, 프로그램이 <b>우리 반 전체 결과</b>로 정리해 줘요.
+        </div>
+        <div className="muted">오늘 급식을 남겼나요?</div>
+        <div className="tags" style={{marginTop:6}}>
+          <span className={"tag"+(sLeft===true?" on":"")} onClick={()=>setSLeft(true)}>남겼어요</span>
+          <span className={"tag"+(sLeft===false?" on":"")} onClick={()=>setSLeft(false)}>안 남겼어요</span>
+        </div>
+        {sLeft===true && (
+          <div style={{marginTop:8}}>
+            <div className="muted">무엇을 남겼나요?</div>
+            <input value={sWhat} onChange={e=>setSWhat(e.target.value)} placeholder="예: 나물, 김치"
+              style={{width:"100%",marginTop:4,padding:8,border:"1px solid var(--line)",borderRadius:8,font:"inherit"}} />
+            <div className="muted" style={{marginTop:8}}>왜 남겼나요?</div>
+            <div className="tags" style={{marginTop:4}}>
+              {(d.why_options||[]).map(w=>(
+                <span key={w} className={"tag"+(sWhy===w?" on":"")} onClick={()=>setSWhy(w)}>{w}</span>
+              ))}
+            </div>
+          </div>
+        )}
+        <div className="row" style={{marginTop:10}}>
+          <button className="primary" onClick={submitSurvey}
+            disabled={sending||sLeft===null||(sLeft===true&&!sWhy)}>{sending?"내는 중…":"응답 내기"}</button>
+          <span className="muted">한 명 답하고 '응답 내기' → 다음 친구가 이어서 답해요.</span>
+        </div>
+        <div style={{marginTop:12, borderTop:"1px dashed var(--line)", paddingTop:10}}>
+          <b>우리 반 전체 결과</b>
+          {d.survey.total===0 ? (
+            <div className="muted" style={{marginTop:6}}>아직 응답이 없어요.</div>
+          ) : (
+            <div style={{marginTop:6}}>
+              <div>응답 {d.survey.total}명 중 <b>{d.survey.left}명</b>이 급식을 남겼어요.</div>
+              {d.survey.reasons.length>0 &&
+                <div style={{marginTop:4}}>이유별: {d.survey.reasons.map(r=>`${r.why} ${r.count}명`).join(" · ")}</div>}
+            </div>
+          )}
+          <div className="muted" style={{marginTop:6}}>이 결과가 아래 활동1의 '우리 반 정보 카드'로 정리됩니다.</div>
+        </div>
+      </div>
+
+      <div className="card">
         <b>활동 1 · AI에게 알려 줄 조사 데이터 고르기</b>
         <div className="muted" style={{margin:"6px 0"}}>
-          아래는 <b>선생님이 준 우리 반 정보 카드</b>입니다. 이 중 우리 반 잔반 문제를 푸는 데
+          아래는 <b>우리 반 조사로 정리된 정보 카드</b>입니다. 이 중 우리 반 잔반 문제를 푸는 데
           <b> 꼭 필요한 것 2~3개</b>를 고르세요. (숫자·이유별·친구의 말은 도움이 되고, 관계없는 정보는 빼요.)
         </div>
         {d.cards.map(c=>(

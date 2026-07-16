@@ -43,6 +43,7 @@ from app.models import (
     Review,
     Status,
     Submission,
+    SurveyResponse,
     Team,
     TeacherAnswer,
     TeamNote,
@@ -149,6 +150,8 @@ DATA3_QUESTIONS = [
      "q": "오늘 우리 반 24명 중 9명이 급식을 남겼고, 그중 6명은 양이 많아서 남겼다고 답했어. "
           "이 조사 결과를 바탕으로 우리 반의 급식 잔반을 줄이는 방법을 알려 줘."},
 ]
+# 3차시 도입 '오늘 급식 조사'의 '왜' 선택지
+DATA3_WHY = ["양이 많아서", "좋아하는 음식이 아니어서", "먹을 시간이 부족해서", "기타"]
 
 # 태그를 쓰는 차시(되돌림 있는 차시)에 기본 4태그를 붙인다.
 for _n, _cfg in SESSIONS.items():
@@ -949,10 +952,54 @@ def _cs_set(s: Session, classroom_id: int, key: str, text: str) -> None:
         s.add(ClassSetting(classroom_id=classroom_id, key=key, text=text))
 
 
+def _survey_agg(s: Session, classroom_id: int) -> dict:
+    rows = s.scalars(select(SurveyResponse).where(
+        SurveyResponse.classroom_id == classroom_id)).all()
+    left = [r for r in rows if r.left]
+    reasons: dict[str, int] = {}
+    whats: dict[str, int] = {}
+    for r in left:
+        if r.why:
+            reasons[r.why] = reasons.get(r.why, 0) + 1
+        if r.what.strip():
+            whats[r.what.strip()] = whats.get(r.what.strip(), 0) + 1
+    reasons_sorted = sorted(reasons.items(), key=lambda x: -x[1])
+    return {
+        "total": len(rows),
+        "left": len(left),
+        "reasons": [{"why": w, "count": c} for w, c in reasons_sorted],
+        "whats": [{"what": w, "count": c} for w, c in sorted(whats.items(), key=lambda x: -x[1])],
+    }
+
+
+def _survey_cards(s: Session, classroom_id: int) -> list[dict]:
+    """조사 응답을 '우리 반 정보 카드'로 자동 정리한다."""
+    a = _survey_agg(s, classroom_id)
+    if a["total"] == 0:
+        return []
+    cards = [
+        {"id": 1, "type": "숫자", "text": f"오늘 우리 반에서 {a['left']}명이 급식을 남겼다."},
+    ]
+    idx = 2
+    for r in a["reasons"]:
+        cards.append({"id": idx, "type": "이유별",
+                      "text": f"{r['count']}명은 {r['why']} 남겼다."})
+        idx += 1
+    for w in a["whats"][:2]:
+        cards.append({"id": idx, "type": "친구의 말",
+                      "text": f"'{w['what']}'을(를) 남겼다는 친구가 {w['count']}명 있었다."})
+        idx += 1
+    return cards
+
+
 def _class_cards(s: Session, classroom_id: int) -> list[dict]:
     raw = _cs_get(s, classroom_id, "data3_cards")
-    parsed = _parse_cards(raw) if raw.strip() else []
-    return parsed if parsed else DATA3_CARDS
+    if raw.strip():                       # 교사가 직접 입력했으면 그것 우선
+        return _parse_cards(raw)
+    survey = _survey_cards(s, classroom_id)   # 없으면 조사 집계 카드
+    if survey:
+        return survey
+    return DATA3_CARDS                     # 그것도 없으면 예시
 
 
 @app.get("/api/teacher/data3/cards/{classroom_id}")
@@ -981,6 +1028,28 @@ def data3_cards_set(classroom_id: int, body: ClassCardsIn, s: Session = Depends(
     return {"ok": True, "cards": _parse_cards(body.text)}
 
 
+class SurveyIn(BaseModel):
+    team_id: int
+    left: bool
+    what: str = ""
+    why: str = ""
+
+
+@app.post("/api/team/survey")
+def survey_submit(body: SurveyIn, s: Session = Depends(db)):
+    """3차시 도입: 학생 한 명의 '오늘 급식 조사' 응답을 낸다(반 전체로 집계)."""
+    team = s.get(Team, body.team_id)
+    if not team:
+        raise HTTPException(404, "없는 조")
+    s.add(SurveyResponse(
+        classroom_id=team.classroom_id, team_id=body.team_id,
+        left=bool(body.left), what=body.what.strip(), why=body.why.strip(),
+    ))
+    log(s, "survey", team=body.team_id, left=bool(body.left))
+    s.commit()
+    return {"ok": True, "survey": _survey_agg(s, team.classroom_id)}
+
+
 @app.get("/api/team/{team_id}/data3")
 def data3_state(team_id: int, s: Session = Depends(db)):
     team = s.get(Team, team_id)
@@ -988,6 +1057,8 @@ def data3_state(team_id: int, s: Session = Depends(db)):
         raise HTTPException(404, "없는 조")
     sel = _n3_get(s, team_id, "cards")
     return {
+        "survey": _survey_agg(s, team.classroom_id),
+        "why_options": DATA3_WHY,
         "cards": _class_cards(s, team.classroom_id),
         "questions": DATA3_QUESTIONS,
         "selected": [int(x) for x in sel.split(",") if x.strip().isdigit()],
@@ -1429,7 +1500,7 @@ def admin_reset(body: ResetIn, s: Session = Depends(db)):
     for model in (
         AIResponse, Review, PromptVersion, Submission,
         Judgment, JudgeItem, RetraceTag, PeerReview, TransferPrompt,
-        TeacherAnswer, ActivityOption, TeamNote, Event,
+        TeacherAnswer, ActivityOption, TeamNote, SurveyResponse, Event,
     ):
         s.query(model).delete()
     s.commit()
@@ -1516,6 +1587,8 @@ def teacher_reset_session(classroom_id: int, session_no: int,
              ActivityOption.session_no == session_no)
         wipe(TeamNote, TeamNote.team_id.in_(team_ids),
              TeamNote.session_no == session_no)
+        if session_no == 3:   # 3차시 도입 조사 응답
+            wipe(SurveyResponse, SurveyResponse.classroom_id == classroom_id)
         # 차시 고유 활동 (session_no 필드가 없는 것들)
         if session_no == 1:
             wipe(JudgeItem, JudgeItem.team_id.in_(team_ids))

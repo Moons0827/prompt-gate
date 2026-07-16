@@ -292,6 +292,19 @@ class ActivityOption(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)
 
 
+class SurveyResponse(Base):
+    """3차시 도입: 학생 각자가 낸 '오늘 급식 조사' 응답. 반 전체로 집계한다."""
+
+    __tablename__ = "survey_responses"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    classroom_id: Mapped[int] = mapped_column(ForeignKey("classrooms.id"))
+    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
+    left: Mapped[bool] = mapped_column(Boolean, default=False)   # 남겼다
+    what: Mapped[str] = mapped_column(Text, default="")          # 무엇을
+    why: Mapped[str] = mapped_column(Text, default="")           # 왜
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)
+
+
 class ClassSetting(Base):
     """학급 단위 설정·자료 (key-value). 예: 3차시 교사가 입력한 정보 카드."""
 
