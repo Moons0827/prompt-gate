@@ -910,9 +910,11 @@ def data3_state(team_id: int, s: Session = Depends(db)):
         "cards_reason": _n3_get(s, team_id, "cards_reason"),
         "answers": {q["key"]: _n3_get(s, team_id, f"cmp_{q['key']}") for q in DATA3_QUESTIONS},
         "compare_note": _n3_get(s, team_id, "compare_note"),
+        "trace": {k: _n3_get(s, team_id, f"trace_{k}") for k in ("box", "line", "tri")},
         "rewrite_q": _n3_get(s, team_id, "rewrite_q"),
         "rewrite_ans": _n3_get(s, team_id, "rewrite_ans"),
         "rewrite_reason": _n3_get(s, team_id, "rewrite_reason"),
+        "summary": [_n3_get(s, team_id, f"sum{i}") for i in (1, 2, 3)],
     }
 
 

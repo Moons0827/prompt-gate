@@ -1110,6 +1110,8 @@ function DataModule({ teamId, teamLabel, sess, cfg, onLogout }) {
   const [cmpNote, setCmpNote] = useState("");
   const [rewriteQ, setRewriteQ] = useState("");
   const [rewriteReason, setRewriteReason] = useState("");
+  const [trace, setTrace] = useState({box:"",line:"",tri:""});
+  const [summary, setSummary] = useState(["","",""]);
   const [gen, setGen] = useState(false);
   const [genR, setGenR] = useState(false);
   const [msg, setMsg] = useState("");
@@ -1122,6 +1124,8 @@ function DataModule({ teamId, teamLabel, sess, cfg, onLogout }) {
     setCmpNote(prev => prev || j.compare_note);
     setRewriteQ(prev => prev || j.rewrite_q);
     setRewriteReason(prev => prev || j.rewrite_reason);
+    setTrace(prev => (prev.box||prev.line||prev.tri) ? prev : (j.trace || {box:"",line:"",tri:""}));
+    setSummary(prev => prev.some(x=>x) ? prev : (j.summary && j.summary.length===3 ? j.summary : ["","",""]));
   };
   useEffect(()=>{ load(); const t=setInterval(load,5000); return ()=>clearInterval(t); },[teamId]);
 
@@ -1149,6 +1153,9 @@ function DataModule({ teamId, teamLabel, sess, cfg, onLogout }) {
     setGenR(false); load();
   };
   const saveRewriteReason = async()=>{ await note("rewrite_reason",rewriteReason); setMsg("고친 까닭을 저장했어요."); load(); };
+  const saveTrace = async()=>{ await Promise.all([note("trace_box",trace.box),note("trace_line",trace.line),note("trace_tri",trace.tri)]); setMsg("데이터 흔적을 저장했어요."); load(); };
+  const saveSummary = async()=>{ await Promise.all([note("sum1",summary[0]),note("sum2",summary[1]),note("sum3",summary[2])]); setMsg("정리를 저장했어요."); load(); };
+  const setSum = (i,v)=>setSummary(summary.map((x,ix)=>ix===i?v:x));
 
   if(!d) return <div className="card">불러오는 중…</div>;
   const badgeColor = (t)=>({"숫자":"#2a8a4a","이유별":"#2a6ab0","친구의 말":"#9a6a2a","관계없음":"#999"}[t]||"#999");
@@ -1200,6 +1207,22 @@ function DataModule({ teamId, teamLabel, sess, cfg, onLogout }) {
         <textarea value={cmpNote} onChange={e=>setCmpNote(e.target.value)}
           placeholder="예: 가는 어느 학교에나 되는 일반적인 답, 나는 숫자만 있어 원인이 없음, 다는 원인이 있어 음식양 조절 방법이 나왔어요." />
         <div><button className="primary" style={{marginTop:8}} onClick={saveCmpNote} disabled={!cmpNote.trim()}>비교 저장</button></div>
+
+        <div style={{marginTop:14, borderTop:"1px dashed var(--line)", paddingTop:10}}>
+          <b>데이터 흔적 표시</b>
+          <div className="muted" style={{margin:"4px 0"}}>질문 '다'의 AI 답을 보고, 아래 세 가지를 찾아 적어요.</div>
+          <div className="muted">□ 우리 조사 데이터가 그대로 나온 부분</div>
+          <textarea value={trace.box} onChange={e=>setTrace({...trace,box:e.target.value})}
+            placeholder="예: '9명', '양이 많아서' 같은 우리 조사 내용이 답에 그대로 나왔어요." />
+          <div className="muted">밑줄 — 조사 데이터와 연결된 해결 방법</div>
+          <textarea value={trace.line} onChange={e=>setTrace({...trace,line:e.target.value})}
+            placeholder="예: '양이 많아서'와 연결해 '적당히 담기/양 조절' 방법을 알려 줬어요." />
+          <div className="muted">△ AI가 일반적으로 덧붙였거나 확인이 필요한 부분</div>
+          <textarea value={trace.tri} onChange={e=>setTrace({...trace,tri:e.target.value})}
+            placeholder="예: 우리 반 사정과 관계없이 일반적으로 덧붙인 내용이에요." />
+          <div><button className="primary" style={{marginTop:8}} onClick={saveTrace}
+            disabled={!(trace.box||trace.line||trace.tri)}>흔적 저장</button></div>
+        </div>
       </div>
 
       <div className="card">
@@ -1220,6 +1243,30 @@ function DataModule({ teamId, teamLabel, sess, cfg, onLogout }) {
         <textarea value={rewriteReason} onChange={e=>setRewriteReason(e.target.value)}
           placeholder="예: 몇 명이 왜 남겼는지 조사 내용을 넣으니 우리 반에 맞는 구체적인 방법이 나왔어요." />
         <div><button className="primary" style={{marginTop:8}} onClick={saveRewriteReason} disabled={!rewriteReason.trim()}>까닭 저장</button></div>
+      </div>
+
+      <div className="card">
+        <b>정리 · '데이터 한 스푼' 원칙</b>
+        <div className="muted" style={{margin:"4px 0"}}>오늘 배운 내용을 문장으로 완성해요.</div>
+        <div style={{marginTop:8, lineHeight:2.2}}>
+          <div>처음 질문에는{" "}
+            <input value={summary[0]} onChange={e=>setSum(0,e.target.value)}
+              style={{padding:6,border:"1px solid var(--line)",borderRadius:6,font:"inherit",minWidth:180}} />
+            {" "}이(가) 빠져 있었다.
+          </div>
+          <div>조사 내용을 넣자 AI의 답이{" "}
+            <input value={summary[1]} onChange={e=>setSum(1,e.target.value)}
+              style={{padding:6,border:"1px solid var(--line)",borderRadius:6,font:"inherit",minWidth:180}} />
+            {" "}하게 달라졌다.
+          </div>
+          <div>AI에게 조사 내용을 알려 줄 때는{" "}
+            <input value={summary[2]} onChange={e=>setSum(2,e.target.value)}
+              style={{padding:6,border:"1px solid var(--line)",borderRadius:6,font:"inherit",minWidth:180}} />
+            {" "}을(를) 확인해야 한다.
+          </div>
+        </div>
+        <div><button className="primary" style={{marginTop:8}} onClick={saveSummary}
+          disabled={!summary.some(x=>x.trim())}>정리 저장</button></div>
       </div>
 
       {msg && <div className="card ok"><span>{msg}</span><button className="ghost" style={{marginLeft:10}} onClick={()=>setMsg("")}>닫기</button></div>}
