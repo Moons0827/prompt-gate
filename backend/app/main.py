@@ -103,9 +103,10 @@ SESSIONS: dict[int, dict] = {
                        "어떻게 조사하면 좋을지 물어보세요. (우리 반 상황을 알려 주는 것을 잊지 마세요)",
         "answers": 5,      # 통과 시 AI가 5가지로 답한다
         "options": True},  # 활동3: 통과 답 5개를 O/X 적합 판정 + 최종 선정
-    3: {"mode": "loop", "title": "왜? 를 다섯 번",
-        "question": "왜 남기는지, 다섯 번 물어보자.",
-        "placeholder": "우리 반이 남긴 것을 숫자로 넣어서 '왜?'를 물어보세요."},
+    3: {"mode": "data", "title": "데이터 한 스푼",
+        "question": "우리가 조사한 잔반 데이터를 넣으면 AI 답이 어떻게 달라질까?",
+        "intro": "잔반 조사 데이터의 유형(숫자·이유별·친구의 말)과 관계없는 정보를 구분하고, "
+                 "꼭 필요한 데이터를 골라 질문에 넣어 AI 답이 어떻게 달라지는지 비교합니다."},
     4: {"mode": "loop", "title": "우리 아이디어 vs AI 아이디어",
         "question": "우리 아이디어와 AI 아이디어, 어느 쪽이 나을까?",
         "placeholder": "우리가 '할 수 있는 일 / 없는 일'을 조건으로 넣어 아이디어를 물어보세요."},
@@ -125,6 +126,28 @@ SESSIONS: dict[int, dict] = {
         "question": "새로운 문제에 혼자서 질문해 보자. (우리 학교 전기 절약)"},
 }
 LOOP_SESSIONS = {n for n, c in SESSIONS.items() if c["mode"] == "loop"}
+
+# 3차시 — 조사 데이터 카드(활동1) · 비교 질문 3개(활동2)
+DATA3_CARDS = [
+    {"id": 1, "text": "우리 반 학생은 24명이다.", "type": "숫자"},
+    {"id": 2, "text": "오늘 9명이 급식을 남겼다.", "type": "숫자"},
+    {"id": 3, "text": "9명 중 6명은 양이 많아서 남겼다.", "type": "이유별"},
+    {"id": 4, "text": "2명은 좋아하지 않는 음식이어서 남겼다.", "type": "이유별"},
+    {"id": 5, "text": "1명은 먹을 시간이 부족해서 남겼다.", "type": "이유별"},
+    {"id": 6, "text": "한 학생이 '밥을 조금만 받고 싶어요.'라고 말했다.", "type": "친구의 말"},
+    {"id": 7, "text": "오늘 날씨는 흐리다.", "type": "관계없음"},
+    {"id": 8, "text": "우리 반은 체육을 좋아한다.", "type": "관계없음"},
+    {"id": 9, "text": "교실 뒤에 사물함이 있다.", "type": "관계없음"},
+]
+DATA3_QUESTIONS = [
+    {"key": "가", "label": "질문 가 · 조사 내용 없음",
+     "q": "우리 반의 급식 잔반을 줄이는 방법을 알려 줘."},
+    {"key": "나", "label": "질문 나 · 숫자만 있음",
+     "q": "오늘 우리 반 24명 중 9명이 급식을 남겼어. 잔반을 줄이는 방법을 알려 줘."},
+    {"key": "다", "label": "질문 다 · 숫자와 원인이 있음",
+     "q": "오늘 우리 반 24명 중 9명이 급식을 남겼고, 그중 6명은 양이 많아서 남겼다고 답했어. "
+          "이 조사 결과를 바탕으로 우리 반의 급식 잔반을 줄이는 방법을 알려 줘."},
+]
 
 # 태그를 쓰는 차시(되돌림 있는 차시)에 기본 4태그를 붙인다.
 for _n, _cfg in SESSIONS.items():
@@ -853,6 +876,108 @@ def team_note(body: NoteIn, s: Session = Depends(db)):
         ))
     s.commit()
     return {"ok": True}
+
+
+# ── 3차시 — 데이터 카드 · 3질문 비교 · 데이터 넣어 고쳐쓰기 ──────────────
+def _n3_get(s: Session, team_id: int, key: str) -> str:
+    row = s.scalar(select(TeamNote).where(
+        TeamNote.team_id == team_id, TeamNote.session_no == 3, TeamNote.key == key))
+    return row.text if row else ""
+
+
+def _n3_set(s: Session, team_id: int, key: str, text: str) -> None:
+    row = s.scalar(select(TeamNote).where(
+        TeamNote.team_id == team_id, TeamNote.session_no == 3, TeamNote.key == key))
+    if row:
+        row.text = text
+    else:
+        s.add(TeamNote(team_id=team_id, session_no=3, key=key, text=text))
+
+
+_data3_locks: dict[int, asyncio.Lock] = {}
+
+
+@app.get("/api/team/{team_id}/data3")
+def data3_state(team_id: int, s: Session = Depends(db)):
+    team = s.get(Team, team_id)
+    if not team:
+        raise HTTPException(404, "없는 조")
+    sel = _n3_get(s, team_id, "cards")
+    return {
+        "cards": DATA3_CARDS,
+        "questions": DATA3_QUESTIONS,
+        "selected": [int(x) for x in sel.split(",") if x.strip().isdigit()],
+        "cards_reason": _n3_get(s, team_id, "cards_reason"),
+        "answers": {q["key"]: _n3_get(s, team_id, f"cmp_{q['key']}") for q in DATA3_QUESTIONS},
+        "compare_note": _n3_get(s, team_id, "compare_note"),
+        "rewrite_q": _n3_get(s, team_id, "rewrite_q"),
+        "rewrite_ans": _n3_get(s, team_id, "rewrite_ans"),
+        "rewrite_reason": _n3_get(s, team_id, "rewrite_reason"),
+    }
+
+
+class Data3CardsIn(BaseModel):
+    team_id: int
+    selected: list[int] = []
+    reason: str = ""
+
+
+@app.post("/api/team/data3/cards")
+def data3_cards(body: Data3CardsIn, s: Session = Depends(db)):
+    """활동1: 고른 조사 데이터 카드 + 고른 까닭 저장."""
+    _n3_set(s, body.team_id, "cards", ",".join(str(x) for x in body.selected))
+    _n3_set(s, body.team_id, "cards_reason", body.reason.strip())
+    log(s, "data3_cards", team=body.team_id, count=len(body.selected))
+    s.commit()
+    return {"ok": True}
+
+
+@app.post("/api/team/data3/compare/{team_id}")
+async def data3_compare(team_id: int, s: Session = Depends(db)):
+    """활동2: 세 질문(가·나·다)에 대한 AI 답을 만든다(조 공유, 캐시). 동시 클릭 방지."""
+    team = s.get(Team, team_id)
+    if not team:
+        raise HTTPException(404, "없는 조")
+    lock = _data3_locks.setdefault(team_id, asyncio.Lock())
+    async with lock:
+        gen = get_generator()
+        out = {}
+        for q in DATA3_QUESTIONS:
+            key = f"cmp_{q['key']}"
+            existing = _n3_get(s, team_id, key)
+            if existing:
+                out[q["key"]] = existing
+                continue
+            g = await gen.generate(q["q"])
+            if not g.ok:
+                raise HTTPException(502, f"AI 호출 실패: {g.error}")
+            _n3_set(s, team_id, key, g.text.strip())
+            out[q["key"]] = g.text.strip()
+        log(s, "data3_compare", team=team_id)
+        s.commit()
+    return {"answers": out}
+
+
+class Data3RewriteIn(BaseModel):
+    team_id: int
+    prompt: str = Field(min_length=1)
+
+
+@app.post("/api/team/data3/rewrite")
+async def data3_rewrite(body: Data3RewriteIn, s: Session = Depends(db)):
+    """활동3: 데이터를 넣어 고쳐 쓴 질문을 AI에 보내 답을 받는다(다시 보내면 새로)."""
+    team = s.get(Team, body.team_id)
+    if not team:
+        raise HTTPException(404, "없는 조")
+    gen = get_generator()
+    g = await gen.generate(body.prompt.strip())
+    if not g.ok:
+        raise HTTPException(502, f"AI 호출 실패: {g.error}")
+    _n3_set(s, body.team_id, "rewrite_q", body.prompt.strip())
+    _n3_set(s, body.team_id, "rewrite_ans", g.text.strip())
+    log(s, "data3_rewrite", team=body.team_id, chars=len(body.prompt))
+    s.commit()
+    return {"answer": g.text.strip()}
 
 
 # ── 2차시 활동3: 통과 답 O/X 적합 판정 + 최종 선정 ────────────────────

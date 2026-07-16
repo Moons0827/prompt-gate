@@ -1102,6 +1102,131 @@ function TransferModule({ teamId, teamLabel, sess, cfg, onLogout }) {
   );
 }
 
+// ─────────── 3차시 — 데이터 카드·3질문 비교·데이터 넣어 고쳐쓰기 ───────────
+function DataModule({ teamId, teamLabel, sess, cfg, onLogout }) {
+  const [d, setD] = useState(null);
+  const [sel, setSel] = useState([]);
+  const [cardsReason, setCardsReason] = useState("");
+  const [cmpNote, setCmpNote] = useState("");
+  const [rewriteQ, setRewriteQ] = useState("");
+  const [rewriteReason, setRewriteReason] = useState("");
+  const [gen, setGen] = useState(false);
+  const [genR, setGenR] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const load = async () => {
+    const r = await fetch(`${API}/api/team/${teamId}/data3`);
+    const j = await r.json(); setD(j);
+    setSel(prev => prev.length ? prev : j.selected);
+    setCardsReason(prev => prev || j.cards_reason);
+    setCmpNote(prev => prev || j.compare_note);
+    setRewriteQ(prev => prev || j.rewrite_q);
+    setRewriteReason(prev => prev || j.rewrite_reason);
+  };
+  useEffect(()=>{ load(); const t=setInterval(load,5000); return ()=>clearInterval(t); },[teamId]);
+
+  const toggle = (id) => setSel(sel.includes(id) ? sel.filter(x=>x!==id) : [...sel, id]);
+  const note = (key,text)=>fetch(`${API}/api/team/note`,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({team_id:Number(teamId),session_no:3,key,text})});
+  const saveCards = async () => {
+    await fetch(`${API}/api/team/data3/cards`,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({team_id:Number(teamId),selected:sel,reason:cardsReason})});
+    setMsg("활동1을 저장했어요."); load();
+  };
+  const genCompare = async () => {
+    setGen(true);
+    const r = await fetch(`${API}/api/team/data3/compare/${teamId}`,{method:"POST"});
+    if(!r.ok) setMsg((await r.json()).detail || "AI 답 생성 실패");
+    setGen(false); load();
+  };
+  const saveCmpNote = async()=>{ await note("compare_note",cmpNote); setMsg("비교를 저장했어요."); load(); };
+  const genRewrite = async () => {
+    if(!rewriteQ.trim()) return;
+    setGenR(true);
+    const r=await fetch(`${API}/api/team/data3/rewrite`,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({team_id:Number(teamId),prompt:rewriteQ})});
+    if(!r.ok) setMsg((await r.json()).detail || "AI 답 생성 실패");
+    setGenR(false); load();
+  };
+  const saveRewriteReason = async()=>{ await note("rewrite_reason",rewriteReason); setMsg("고친 까닭을 저장했어요."); load(); };
+
+  if(!d) return <div className="card">불러오는 중…</div>;
+  const badgeColor = (t)=>({"숫자":"#2a8a4a","이유별":"#2a6ab0","친구의 말":"#9a6a2a","관계없음":"#999"}[t]||"#999");
+
+  return (
+    <div>
+      <ModuleHeader sess={sess} cfg={cfg} teamLabel={teamLabel} onLogout={onLogout}
+        right={<button className="ghost" onClick={load}>새로고침</button>} />
+      {cfg.intro && <div className="card" style={{background:"#eef2f8"}}>{cfg.intro}</div>}
+
+      <div className="card">
+        <b>활동 1 · AI에게 알려 줄 조사 데이터 고르기</b>
+        <div className="muted" style={{margin:"6px 0"}}>
+          아래 카드 중 우리 반 잔반 문제를 푸는 데 <b>꼭 필요한 것 2~3개</b>를 고르세요.
+          (숫자·이유별·친구의 말은 도움이 되고, 관계없는 정보는 빼요.)
+        </div>
+        {d.cards.map(c=>(
+          <label key={c.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",cursor:"pointer"}}>
+            <input type="checkbox" checked={sel.includes(c.id)} onChange={()=>toggle(c.id)} />
+            <span style={{background:badgeColor(c.type),color:"#fff",padding:"1px 7px",borderRadius:6,fontSize:12,whiteSpace:"nowrap"}}>{c.type}</span>
+            <span>{c.text}</span>
+          </label>
+        ))}
+        <div className="muted" style={{marginTop:8}}>이 카드들을 고른 까닭</div>
+        <textarea value={cardsReason} onChange={e=>setCardsReason(e.target.value)}
+          placeholder="예: 9명이 남겼다는 숫자와 '양이 많아서'라는 원인이 있어야 맞는 방법을 받을 수 있어요. 날씨는 관계없어서 뺐어요." />
+        <div><button className="primary" style={{marginTop:8}} onClick={saveCards} disabled={!sel.length}>활동1 저장</button></div>
+      </div>
+
+      <div className="card">
+        <div className="row" style={{justifyContent:"space-between"}}>
+          <b>활동 2 · 세 질문의 AI 답 비교하기</b>
+          <button className="ghost" onClick={genCompare} disabled={gen}>{gen?"만드는 중…":"AI 답 3개 만들기"}</button>
+        </div>
+        <div className="muted" style={{margin:"4px 0"}}>조사 내용이 다른 세 질문에 AI가 어떻게 다르게 답하는지 비교해요.</div>
+        {d.questions.map(q=>(
+          <div key={q.key} style={{marginTop:10,borderTop:"1px dashed var(--line)",paddingTop:8}}>
+            <b>{q.label}</b>
+            <div className="prompt" style={{marginTop:4}}>{q.q}</div>
+            {d.answers[q.key] ? (
+              <div style={{marginTop:6}}>
+                <div className="muted">AI 답</div>
+                <div className="prompt" style={{background:"#fff",border:"1px solid #cde8d5"}}>{stripMd(d.answers[q.key])}</div>
+              </div>
+            ) : <div className="muted" style={{marginTop:6}}>아직 AI 답이 없어요. 위 버튼을 눌러 만들어요.</div>}
+          </div>
+        ))}
+        <div className="muted" style={{marginTop:10}}>세 답은 어떻게 달랐나요? (질문 가·나·다의 차이)</div>
+        <textarea value={cmpNote} onChange={e=>setCmpNote(e.target.value)}
+          placeholder="예: 가는 어느 학교에나 되는 일반적인 답, 나는 숫자만 있어 원인이 없음, 다는 원인이 있어 음식양 조절 방법이 나왔어요." />
+        <div><button className="primary" style={{marginTop:8}} onClick={saveCmpNote} disabled={!cmpNote.trim()}>비교 저장</button></div>
+      </div>
+
+      <div className="card">
+        <b>활동 3 · 데이터를 넣어 질문 고쳐 쓰기</b>
+        <div className="muted" style={{margin:"6px 0"}}>활동1에서 고른 데이터를 넣어 질문 전체를 고쳐 쓰고, AI에게 보내 답을 받아요.</div>
+        <textarea value={rewriteQ} onChange={e=>setRewriteQ(e.target.value)}
+          placeholder="예: 오늘 우리 반 24명 중 9명이 급식을 남겼고, 그중 6명은 양이 많아서 남겼습니다. 이 조사 결과를 바탕으로 우리 반의 급식 잔반을 줄이는 방법을 제안해 주세요." />
+        <div className="row" style={{marginTop:8}}>
+          <button className="primary" onClick={genRewrite} disabled={genR||!rewriteQ.trim()}>{genR?"보내는 중…":"AI에게 보내기"}</button>
+        </div>
+        {d.rewrite_ans && (
+          <div style={{marginTop:8}}>
+            <div className="muted">AI 답</div>
+            <div className="prompt" style={{background:"#fff",border:"1px solid #cde8d5"}}>{stripMd(d.rewrite_ans)}</div>
+          </div>
+        )}
+        <div className="muted" style={{marginTop:10}}>고친 까닭을 한 문장으로 써요.</div>
+        <textarea value={rewriteReason} onChange={e=>setRewriteReason(e.target.value)}
+          placeholder="예: 몇 명이 왜 남겼는지 조사 내용을 넣으니 우리 반에 맞는 구체적인 방법이 나왔어요." />
+        <div><button className="primary" style={{marginTop:8}} onClick={saveRewriteReason} disabled={!rewriteReason.trim()}>까닭 저장</button></div>
+      </div>
+
+      {msg && <div className="card ok"><span>{msg}</span><button className="ghost" style={{marginLeft:10}} onClick={()=>setMsg("")}>닫기</button></div>}
+    </div>
+  );
+}
+
 // ─────────── 2차시 활동3 — 통과 답 O/X 적합 판정 + 최종 선정 ───────────
 function ActivitySection({ teamId, sess }) {
   const [data, setData] = useState(null);
@@ -1336,6 +1461,7 @@ function App() {
     const p = { ...creds, cfg, onLogout: home };
     switch (cfg.mode) {
       case "judge":    return <JudgeModule {...p} />;
+      case "data":     return <DataModule {...p} />;
       case "retrace":  return <RetraceModule {...p} />;
       case "peer":     return <PeerModule {...p} />;
       case "transfer": return <TransferModule {...p} />;
