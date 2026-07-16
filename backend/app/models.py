@@ -292,6 +292,17 @@ class ActivityOption(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)
 
 
+class ClassSetting(Base):
+    """학급 단위 설정·자료 (key-value). 예: 3차시 교사가 입력한 정보 카드."""
+
+    __tablename__ = "class_settings"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    classroom_id: Mapped[int] = mapped_column(ForeignKey("classrooms.id"))
+    key: Mapped[str] = mapped_column(String(30))
+    text: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)
+
+
 class TeamNote(Base):
     """조의 자유 서술 메모. key로 용도를 구분한다.
 

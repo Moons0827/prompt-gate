@@ -266,7 +266,22 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
   const [maxDirty, setMaxDirty] = useState(false);
   const [teachSess, setTeachSess] = useState(1);     // 교사가 보는 차시
   const [busy, setBusy] = useState(false);           // 통과/되돌림 처리 중
+  const [data3Cards, setData3Cards] = useState("");  // 3차시 정보 카드 입력
+  const [data3Default, setData3Default] = useState("");
   const mode = (sessCfg?.[teachSess] || {}).mode;
+
+  useEffect(() => {   // 3차시 정보 카드는 폴링과 분리해 한 번만 불러온다(편집 보호)
+    fetch(`${API}/api/teacher/data3/cards/${classroomId}`).then(r=>r.ok?r.json():null).then(dd=>{
+      if (dd) { setData3Default(dd.default); setData3Cards(dd.text); }
+    });
+  }, [classroomId]);
+  const saveData3Cards = async () => {
+    const r = await fetch(`${API}/api/teacher/data3/cards/${classroomId}`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({text: data3Cards})});
+    setMsg(r.ok ? {bad:false, text:"정보 카드를 저장했어요. 학생 활동1에 반영됩니다."}
+                : {bad:true, text:"저장 실패"});
+  };
 
   const load = async () => {
     const r = await fetch(`${API}/api/teacher/queue/${classroomId}`);
@@ -388,6 +403,23 @@ function TeacherView({ classroomId, classLabel, sessCfg, onLogout }) {
         <div className="muted">지금 보는 <b>{teachSess}차시</b>의 이 학급 활동 데이터만 지웁니다. (코드 필요)</div>
         <button className="block" onClick={resetSession}>이 차시 초기화</button>
       </div>
+
+      {mode === "data" && (
+      <div className="card">
+        <b>3차시 · 우리 반 정보 카드(설문 결과) 입력</b>
+        <div className="muted" style={{margin:"4px 0"}}>
+          도입에서 조사한 <b>설문 결과</b>를 한 줄에 하나씩 <b>정보 카드</b>로 적어 주세요.
+          학생이 활동1에서 이 카드를 받아 고릅니다. 유형을 붙이려면 앞에
+          <b> [숫자] [이유별] [친구의 말] [관계없음] </b>처럼 써요. (비워 두면 예시 카드가 나갑니다.)
+        </div>
+        <textarea value={data3Cards} onChange={e=>setData3Cards(e.target.value)}
+          style={{minHeight:160}} placeholder={data3Default} />
+        <div className="row" style={{marginTop:8}}>
+          <button className="primary" onClick={saveData3Cards}>정보 카드 저장 (학생에게 전달)</button>
+          <button className="ghost" onClick={()=>setData3Cards(data3Default)}>예시 불러오기</button>
+        </div>
+      </div>
+      )}
 
       {mode === "loop" && (
       <div className="card row" style={{justifyContent:"space-between", alignItems:"center"}}>
@@ -1169,8 +1201,8 @@ function DataModule({ teamId, teamLabel, sess, cfg, onLogout }) {
       <div className="card">
         <b>활동 1 · AI에게 알려 줄 조사 데이터 고르기</b>
         <div className="muted" style={{margin:"6px 0"}}>
-          아래 카드 중 우리 반 잔반 문제를 푸는 데 <b>꼭 필요한 것 2~3개</b>를 고르세요.
-          (숫자·이유별·친구의 말은 도움이 되고, 관계없는 정보는 빼요.)
+          아래는 <b>선생님이 준 우리 반 정보 카드</b>입니다. 이 중 우리 반 잔반 문제를 푸는 데
+          <b> 꼭 필요한 것 2~3개</b>를 고르세요. (숫자·이유별·친구의 말은 도움이 되고, 관계없는 정보는 빼요.)
         </div>
         {d.cards.map(c=>(
           <label key={c.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",cursor:"pointer"}}>

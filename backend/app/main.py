@@ -30,6 +30,7 @@ from app.models import (
     ActivityOption,
     AIResponse,
     Base,
+    ClassSetting,
     Classroom,
     Condition,
     Event,
@@ -896,6 +897,71 @@ def _n3_set(s: Session, team_id: int, key: str, text: str) -> None:
 
 _data3_locks: dict[int, asyncio.Lock] = {}
 
+# 교사가 정보 카드를 입력하지 않았을 때 보여 줄 기본 예시(과정안 예시).
+DATA3_DEFAULT_CARDS_TEXT = "\n".join(f"[{c['type']}] {c['text']}" for c in DATA3_CARDS)
+
+
+def _parse_cards(text: str) -> list[dict]:
+    """한 줄에 카드 하나. '[유형] 내용' 형식이면 유형 배지를 붙인다."""
+    cards = []
+    for i, line in enumerate((text or "").splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r"^\[(.+?)\]\s*(.+)$", line)
+        if m:
+            cards.append({"id": i, "type": m.group(1).strip(), "text": m.group(2).strip()})
+        else:
+            cards.append({"id": i, "type": "", "text": line})
+    return cards
+
+
+def _cs_get(s: Session, classroom_id: int, key: str) -> str:
+    row = s.scalar(select(ClassSetting).where(
+        ClassSetting.classroom_id == classroom_id, ClassSetting.key == key))
+    return row.text if row else ""
+
+
+def _cs_set(s: Session, classroom_id: int, key: str, text: str) -> None:
+    row = s.scalar(select(ClassSetting).where(
+        ClassSetting.classroom_id == classroom_id, ClassSetting.key == key))
+    if row:
+        row.text = text
+    else:
+        s.add(ClassSetting(classroom_id=classroom_id, key=key, text=text))
+
+
+def _class_cards(s: Session, classroom_id: int) -> list[dict]:
+    raw = _cs_get(s, classroom_id, "data3_cards")
+    parsed = _parse_cards(raw) if raw.strip() else []
+    return parsed if parsed else DATA3_CARDS
+
+
+@app.get("/api/teacher/data3/cards/{classroom_id}")
+def data3_cards_get(classroom_id: int, s: Session = Depends(db)):
+    """교사용: 이 학급의 3차시 정보 카드 입력값(설문 결과)을 준다."""
+    cr = s.get(Classroom, classroom_id)
+    if not cr:
+        raise HTTPException(404, "없는 학급")
+    raw = _cs_get(s, classroom_id, "data3_cards")
+    return {"text": raw, "default": DATA3_DEFAULT_CARDS_TEXT}
+
+
+class ClassCardsIn(BaseModel):
+    text: str = ""
+
+
+@app.post("/api/teacher/data3/cards/{classroom_id}")
+def data3_cards_set(classroom_id: int, body: ClassCardsIn, s: Session = Depends(db)):
+    """교사용: 설문 결과를 정보 카드로 저장한다(한 줄에 카드 하나, 학급 공유)."""
+    cr = s.get(Classroom, classroom_id)
+    if not cr:
+        raise HTTPException(404, "없는 학급")
+    _cs_set(s, classroom_id, "data3_cards", body.text)
+    log(s, "data3_class_cards", classroom=classroom_id)
+    s.commit()
+    return {"ok": True, "cards": _parse_cards(body.text)}
+
 
 @app.get("/api/team/{team_id}/data3")
 def data3_state(team_id: int, s: Session = Depends(db)):
@@ -904,7 +970,7 @@ def data3_state(team_id: int, s: Session = Depends(db)):
         raise HTTPException(404, "없는 조")
     sel = _n3_get(s, team_id, "cards")
     return {
-        "cards": DATA3_CARDS,
+        "cards": _class_cards(s, team.classroom_id),
         "questions": DATA3_QUESTIONS,
         "selected": [int(x) for x in sel.split(",") if x.strip().isdigit()],
         "cards_reason": _n3_get(s, team_id, "cards_reason"),
