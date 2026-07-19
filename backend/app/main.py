@@ -1052,6 +1052,13 @@ def _class_cards(s: Session, classroom_id: int) -> tuple[list[dict], str]:
     return DATA3_CARDS, "default"             # 아직 전달 전 — 예시 카드
 
 
+def _data3_sentence(s: Session, classroom_id: int) -> str:
+    """3차시 데이터 카드(숫자·이유별)를 이어 한 문장 데이터로."""
+    cards, _ = _class_cards(s, classroom_id)
+    parts = [c["text"] for c in cards if c.get("type") in ("숫자", "이유별")]
+    return " ".join(parts)
+
+
 @app.get("/api/teacher/data3/cards/{classroom_id}")
 def data3_cards_get(classroom_id: int, s: Session = Depends(db)):
     """교사용: 이 학급의 3차시 정보 카드 입력값(설문 결과)을 준다."""
@@ -1288,6 +1295,16 @@ def cond4_state(team_id: int, s: Session = Depends(db)):
         "match": st2.get("match", {}),         # {answerKey: optKey}
         "answer_checks": st2.get("checks", {}),  # {answerKey: {checkIdx: bool}}
         "diff": st2.get("diff", ""),
+        # 활동3 — 데이터+조건으로 질문 완성, 전/후 비교
+        "data3_summary": _data3_sentence(s, team.classroom_id),
+        "ask": {
+            "before_q": _tn_get(s, team_id, 4, "ask_before_q"),
+            "before_ans": _tn_get(s, team_id, 4, "ask_before_ans"),
+            "after_q": _tn_get(s, team_id, 4, "ask_after_q"),
+            "after_ans": _tn_get(s, team_id, 4, "ask_after_ans"),
+        },
+        "final_phrase": _tn_get(s, team_id, 4, "final_phrase"),
+        "change_note": _tn_get(s, team_id, 4, "change_note"),
     }
 
 
@@ -1342,6 +1359,31 @@ def cond4_match(body: Cond4MatchIn, s: Session = Depends(db)):
     log(s, "cond4_match", team=body.team_id, correct=correct)
     s.commit()
     return {"ok": True, "correct": correct}
+
+
+class Cond4AskIn(BaseModel):
+    team_id: int
+    slot: str                       # "before"(데이터만) | "after"(데이터+조건)
+    prompt: str = Field(min_length=1)
+
+
+@app.post("/api/team/cond4/ask")
+async def cond4_ask(body: Cond4AskIn, s: Session = Depends(db)):
+    """활동3: 질문을 AI에 보내 캠페인 문구를 받는다. slot으로 전(데이터만)/후(조건) 저장."""
+    team = s.get(Team, body.team_id)
+    if not team:
+        raise HTTPException(404, "없는 조")
+    if body.slot not in ("before", "after"):
+        raise HTTPException(400, "slot은 before/after")
+    gen = get_generator()
+    g = await gen.generate(body.prompt.strip())
+    if not g.ok:
+        raise HTTPException(502, f"AI 호출 실패: {g.error}")
+    _tn_set(s, body.team_id, 4, f"ask_{body.slot}_q", body.prompt.strip())
+    _tn_set(s, body.team_id, 4, f"ask_{body.slot}_ans", g.text.strip())
+    log(s, "cond4_ask", team=body.team_id, slot=body.slot)
+    s.commit()
+    return {"answer": g.text.strip()}
 
 
 # ── 2차시 활동3: 통과 답 O/X 적합 판정 + 최종 선정 ────────────────────

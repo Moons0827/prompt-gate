@@ -1445,6 +1445,11 @@ function ConditionModule({ teamId, teamLabel, sess, cfg, onLogout }) {
   const [achecks, setAchecks] = useState({});   // {answerKey: {idx: bool}}
   const [diff, setDiff] = useState("");
   const [revealed, setRevealed] = useState(false);
+  const [beforeQ, setBeforeQ] = useState("");   // 활동3
+  const [afterQ, setAfterQ] = useState("");
+  const [finalPhrase, setFinalPhrase] = useState("");
+  const [changeNote, setChangeNote] = useState("");
+  const [running, setRunning] = useState("");
   const [msg, setMsg] = useState("");
 
   const load = async () => {
@@ -1456,6 +1461,10 @@ function ConditionModule({ teamId, teamLabel, sess, cfg, onLogout }) {
     setMatch(prev => Object.keys(prev).length ? prev : (j.match||{}));
     setAchecks(prev => Object.keys(prev).length ? prev : (j.answer_checks||{}));
     setDiff(prev => prev || (j.diff||""));
+    setBeforeQ(prev => prev || j.ask.before_q || (j.data3_summary ? `${j.data3_summary} 잔반을 줄이는 방법을 알려 줘.` : ""));
+    setAfterQ(prev => prev || j.ask.after_q || "");
+    setFinalPhrase(prev => prev || (j.final_phrase||""));
+    setChangeNote(prev => prev || (j.change_note||""));
   };
   useEffect(()=>{ load(); const t=setInterval(load,5000); return ()=>clearInterval(t); },[teamId]);
 
@@ -1482,6 +1491,20 @@ function ConditionModule({ teamId, teamLabel, sess, cfg, onLogout }) {
     await fetch(`${API}/api/team/cond4/match`, {method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({team_id:Number(teamId), match, checks:achecks, diff})});
     setMsg("활동2를 저장했어요."); load();
+  };
+  const runAsk = async (slot, prompt) => {
+    if(!prompt.trim()) return;
+    setRunning(slot);
+    await fetch(`${API}/api/team/cond4/ask`, {method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({team_id:Number(teamId), slot, prompt})});
+    setRunning(""); load();
+  };
+  const note4 = (key,text)=>fetch(`${API}/api/team/note`,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({team_id:Number(teamId), session_no:4, key, text})});
+  const saveFinal = async()=>{ await Promise.all([note4("final_phrase",finalPhrase),note4("change_note",changeNote)]); setMsg("활동3을 저장·제출했어요."); load(); };
+  const buildAfter = () => {
+    const conds = d.cards.filter(c=>selected.includes(c.id)).map(c=>c.text).join(", ");
+    setAfterQ(`${d.data3_summary} 이 조사 결과를 바탕으로, ${conds ? conds+" 조건에 맞게 " : ""}초등학생이 급식 시간에 바로 실천할 수 있는 잔반 줄이기 캠페인 문구를 제안해 주세요.`);
   };
 
   if(!d) return <div className="card">불러오는 중…</div>;
@@ -1590,6 +1613,58 @@ function ConditionModule({ teamId, teamLabel, sess, cfg, onLogout }) {
         <div className="muted" style={{marginTop:10}}>세 답변의 차이를 한마디로!</div>
         <textarea value={diff} onChange={e=>setDiff(e.target.value)}
           placeholder="예: 조건이 자세할수록 짧고 우리 반에 맞는 답이 나온다." />
+      </div>
+
+      <div className="card">
+        <b>활동 3 · 데이터 + 조건으로 캠페인 질문 완성</b>
+        <div className="muted" style={{margin:"4px 0"}}>
+          3차시 데이터에 활동1에서 고른 조건을 붙여 하나의 질문으로 완성하고, AI에게 캠페인 문구를 받아 <b>전/후</b>를 비교해요.
+        </div>
+        <div className="muted" style={{marginTop:6}}>3차시 데이터</div>
+        <div className="prompt">{d.data3_summary || "(3차시 데이터가 아직 없어요)"}</div>
+        <div className="muted" style={{marginTop:8}}>우리가 고른 조건</div>
+        <div className="prompt">{selected.length ? d.cards.filter(c=>selected.includes(c.id)).map(cardLabel).join(" / ") : "(활동1에서 조건 3개를 먼저 고르세요)"}</div>
+
+        <div style={{marginTop:12, borderTop:"1px dashed var(--line)", paddingTop:8}}>
+          <b>① 전 — 데이터만으로 물어보기</b>
+          <textarea value={beforeQ} onChange={e=>setBeforeQ(e.target.value)} />
+          <div><button className="primary" style={{marginTop:6}} onClick={()=>runAsk("before",beforeQ)}
+            disabled={running==="before"||!beforeQ.trim()}>{running==="before"?"물어보는 중…":"데이터만으로 실행"}</button></div>
+          {d.ask.before_ans && <div className="prompt" style={{marginTop:8,background:"#fff"}}>{stripMd(d.ask.before_ans)}</div>}
+        </div>
+
+        <div style={{marginTop:12, borderTop:"1px dashed var(--line)", paddingTop:8}}>
+          <div className="row" style={{justifyContent:"space-between", alignItems:"center"}}>
+            <b>② 후 — 데이터 + 조건으로 물어보기</b>
+            <button className="ghost" onClick={buildAfter}>데이터+조건 자동 넣기</button>
+          </div>
+          <textarea value={afterQ} onChange={e=>setAfterQ(e.target.value)}
+            placeholder="데이터 문장과 우리가 고른 조건을 이어 하나의 질문으로 완성해요." />
+          <div><button className="primary" style={{marginTop:6}} onClick={()=>runAsk("after",afterQ)}
+            disabled={running==="after"||!afterQ.trim()}>{running==="after"?"물어보는 중…":"완성 질문으로 실행"}</button></div>
+          {d.ask.after_ans && <div className="prompt" style={{marginTop:8,background:"#fff",border:"1px solid #cde8d5"}}>{stripMd(d.ask.after_ans)}</div>}
+        </div>
+
+        {(d.ask.before_ans && d.ask.after_ans) && (
+          <div style={{marginTop:12, borderTop:"1px dashed var(--line)", paddingTop:8}}>
+            <b>전/후 비교</b>
+            <div className="row" style={{gap:10, alignItems:"stretch", flexWrap:"wrap", marginTop:6}}>
+              <div style={{flex:1, minWidth:220}}><div className="muted">데이터만 (전)</div>
+                <div className="prompt" style={{background:"#fff"}}>{stripMd(d.ask.before_ans)}</div></div>
+              <div style={{flex:1, minWidth:220}}><div className="muted">데이터+조건 (후)</div>
+                <div className="prompt" style={{background:"#fff", border:"1px solid #cde8d5"}}>{stripMd(d.ask.after_ans)}</div></div>
+            </div>
+          </div>
+        )}
+
+        <div className="muted" style={{marginTop:12}}>완성한 캠페인 문구</div>
+        <textarea value={finalPhrase} onChange={e=>setFinalPhrase(e.target.value)}
+          placeholder="예: '딱 먹을 만큼만!' / '한 입 더, 잔반 제로!' / '남기기 전에 다시 한 번!'" />
+        <div className="muted" style={{marginTop:8}}>조건을 넣었더니 답이 어떻게 바뀌었나요? (한 문장)</div>
+        <textarea value={changeNote} onChange={e=>setChangeNote(e.target.value)}
+          placeholder="예: 조건을 넣으니 짧고 우리 반이 바로 쓸 수 있는 문구가 나왔다." />
+        <div><button className="primary" style={{marginTop:8}} onClick={saveFinal}
+          disabled={!finalPhrase.trim() && !changeNote.trim()}>활동3 저장·제출</button></div>
       </div>
     </div>
   );
