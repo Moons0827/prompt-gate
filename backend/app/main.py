@@ -1916,6 +1916,25 @@ _TAG_KO = [("tag_purpose", "목적"), ("tag_situation", "상황"), ("tag_audienc
            ("tag_condition", "조건"), ("tag_role", "역할"), ("tag_example", "예시")]
 
 
+# TeamNote 키 → 읽기 쉬운 이름(수집·교사 화면용). 내부 JSON은 건너뛴다.
+_NOTE_SKIP = {"cards", "cond", "cond2"}
+_NOTE_LABELS = {
+    "compare": "1차시 비교",
+    "final": "2차시 최종선정",
+    "cards_reason": "3차시 카드 고른 까닭", "compare_note": "3차시 세 답 비교",
+    "trace_box": "3차시 흔적 □", "trace_line": "3차시 흔적 밑줄", "trace_tri": "3차시 흔적 △",
+    "rewrite_q": "3차시 고쳐 쓴 질문", "rewrite_ans": "3차시 AI 답", "rewrite_reason": "3차시 고친 까닭",
+    "sum1": "3차시 정리1", "sum2": "3차시 정리2", "sum3": "3차시 정리3",
+    "cmp_가": "3차시 질문가 답", "cmp_나": "3차시 질문나 답", "cmp_다": "3차시 질문다 답",
+    "cond_selected": "4차시 고른 조건", "cond_excluded": "4차시 뺀 조건",
+    "cond2_match": "4차시 거꾸로 맞히기", "cond2_diff": "4차시 세 답 차이",
+    "ask_before_q": "4차시 전-질문", "ask_before_ans": "4차시 전-답",
+    "ask_after_q": "4차시 후-질문", "ask_after_ans": "4차시 후-답",
+    "final_phrase": "4차시 완성 문구", "change_note": "4차시 변화 한문장",
+    "vote": "4차시 투표(조번호)",
+}
+
+
 def _collect_rows(s: Session, classroom_id: int | None = None) -> list[dict]:
     tmap, cmap = {}, {}
     for t, cr in s.execute(
@@ -1941,9 +1960,22 @@ def _collect_rows(s: Session, classroom_id: int | None = None) -> list[dict]:
         v = _VERDICT_LABEL.get(jd.verdict, str(jd.verdict))
         add(jd.team_id, 1, "판정", f"답{jd.item_index}",
             v + (f" / 까닭: {jd.reason}" if jd.reason else ""))
-    # 조 메모(1차시 비교, 2차시 최종선정 등)
+    # 3차시 도입 조사(조별)
+    for r in s.scalars(select(SurveyResponse).order_by(SurveyResponse.team_id)):
+        try:
+            rd = json.loads(r.reasons or "{}")
+        except Exception:
+            rd = {}
+        rtxt = ", ".join(f"{k} {v}명" for k, v in rd.items())
+        add(r.team_id, 3, "도입조사", "",
+            f"우리 조 {r.members}명 중 {r.left_count}명 남김"
+            + (f" ({rtxt})" if rtxt else "")
+            + (f" / 기타의견: {r.etc_note}" if r.etc_note else ""))
+    # 조 메모(활동 서술) — 내부 JSON은 건너뛰고, 읽기 쉬운 이름으로
     for tn in s.scalars(select(TeamNote).order_by(TeamNote.team_id, TeamNote.session_no)):
-        add(tn.team_id, tn.session_no, "메모", tn.key, tn.text)
+        if tn.key in _NOTE_SKIP or not (tn.text or "").strip():
+            continue
+        add(tn.team_id, tn.session_no, "활동", _NOTE_LABELS.get(tn.key, tn.key), tn.text)
     # 되돌림 루프 — 학생 질문 · 교사 판정 · AI 답
     for sub in s.scalars(select(Submission).order_by(Submission.team_id, Submission.session_no)):
         for v in sub.versions:
