@@ -109,9 +109,10 @@ SESSIONS: dict[int, dict] = {
         "question": "우리가 조사한 잔반 데이터를 넣으면 AI 답이 어떻게 달라질까?",
         "intro": "잔반 조사 데이터의 유형(숫자·이유별·친구의 말)과 관계없는 정보를 구분하고, "
                  "꼭 필요한 데이터를 골라 질문에 넣어 AI 답이 어떻게 달라지는지 비교합니다."},
-    4: {"mode": "loop", "title": "우리 아이디어 vs AI 아이디어",
-        "question": "우리 아이디어와 AI 아이디어, 어느 쪽이 나을까?",
-        "placeholder": "우리가 '할 수 있는 일 / 없는 일'을 조건으로 넣어 아이디어를 물어보세요."},
+    4: {"mode": "condition", "title": "효과 없는 조건을 걸러라",
+        "question": "우리 캠페인에 쓸 '조건'을 고르고, 방해되는 조건은 걸러내자.",
+        "intro": "오늘의 목적: 우리 반 게시판에 붙일, 초등학생이 실천할 짧은 '잔반 줄이기 문구' 만들기. "
+                 "모둠 역할(조작이·기록이·발표이)을 돌아가며 맡아요."},
     5: {"mode": "loop", "title": "같은 학교인데 왜 못 알아들을까",
         "question": "같은 학교에 다니는데도, 왜 어떤 사람은 우리 포스터를 못 알아들을까?",
         "placeholder": "그 사람이 무엇을 모르는지 + 우리 반 자료를 넣어 포스터 문구를 부탁하세요.",
@@ -152,6 +153,19 @@ DATA3_QUESTIONS = [
 ]
 # 3차시 도입 '오늘 급식 조사'의 '왜' 선택지
 DATA3_WHY = ["양이 많아서", "좋아하는 음식이 아니어서", "먹을 시간이 부족해서", "기타"]
+
+# 4차시 활동1 — 캠페인 조건 카드 8장(도움 5 / 방해 3)
+COND4_PURPOSE = "우리 반 게시판에 붙일, 초등학생이 실천할 짧은 '잔반 줄이기 문구' 만들기"
+COND4_CARDS = [
+    {"id": 1, "label": "대상", "text": "초등학생이 이해하기 쉽게", "helpful": True},
+    {"id": 2, "label": "개수", "text": "세 가지만", "helpful": True},
+    {"id": 3, "label": "형식", "text": "짧은 게시판 문구로", "helpful": True},
+    {"id": 4, "label": "관점", "text": "우리 반이 직접 할 수 있는 것만", "helpful": True},
+    {"id": 5, "label": "범위", "text": "급식 시간에 할 수 있는 것으로", "helpful": True},
+    {"id": 6, "label": "방해", "text": "어려운 전문 용어를 잔뜩 넣기", "helpful": False},
+    {"id": 7, "label": "방해", "text": "스무 가지를 모두 넣기", "helpful": False},
+    {"id": 8, "label": "방해", "text": "어른 회의 발표 자료로 만들기", "helpful": False},
+]
 
 # 태그를 쓰는 차시(되돌림 있는 차시)에 기본 4태그를 붙인다.
 for _n, _cfg in SESSIONS.items():
@@ -1203,6 +1217,67 @@ async def data3_rewrite(body: Data3RewriteIn, s: Session = Depends(db)):
     log(s, "data3_rewrite", team=body.team_id, chars=len(body.prompt))
     s.commit()
     return {"answer": g.text.strip()}
+
+
+# ── 4차시 — 캠페인 조건 카드 고르기·걸러내기 ─────────────────────────
+def _tn_get(s: Session, team_id: int, session: int, key: str) -> str:
+    row = s.scalar(select(TeamNote).where(
+        TeamNote.team_id == team_id, TeamNote.session_no == session, TeamNote.key == key))
+    return row.text if row else ""
+
+
+def _tn_set(s: Session, team_id: int, session: int, key: str, text: str) -> None:
+    row = s.scalar(select(TeamNote).where(
+        TeamNote.team_id == team_id, TeamNote.session_no == session, TeamNote.key == key))
+    if row:
+        row.text = text
+    else:
+        s.add(TeamNote(team_id=team_id, session_no=session, key=key, text=text))
+
+
+@app.get("/api/team/{team_id}/cond4")
+def cond4_state(team_id: int, s: Session = Depends(db)):
+    team = s.get(Team, team_id)
+    if not team:
+        raise HTTPException(404, "없는 조")
+    try:
+        st = json.loads(_tn_get(s, team_id, 4, "cond") or "{}")
+    except Exception:
+        st = {}
+    return {
+        "cards": COND4_CARDS,
+        "purpose": COND4_PURPOSE,
+        "judge": st.get("judge", {}),          # {id: "up"/"down"}
+        "excluded": st.get("excluded", {}),    # {id: 빼는 까닭}
+        "selected": st.get("selected", []),    # [id] 최대 3
+    }
+
+
+class Cond4In(BaseModel):
+    team_id: int
+    judge: dict[str, str] = {}
+    excluded: dict[str, str] = {}
+    selected: list[int] = []
+
+
+@app.post("/api/team/cond4")
+def cond4_save(body: Cond4In, s: Session = Depends(db)):
+    """활동1: 조건 카드 판정(👍/👎) + 방해 제외 까닭 + 쓸 조건 3개 저장."""
+    team = s.get(Team, body.team_id)
+    if not team:
+        raise HTTPException(404, "없는 조")
+    st = {"judge": body.judge, "excluded": body.excluded, "selected": body.selected[:3]}
+    _tn_set(s, body.team_id, 4, "cond", json.dumps(st, ensure_ascii=False))
+    # 교사 확인·수집용 읽기 쉬운 요약
+    label = {c["id"]: f"[{c['label']}] {c['text']}" for c in COND4_CARDS}
+    sel_txt = " / ".join(label.get(i, "") for i in body.selected[:3])
+    exc_txt = " / ".join(
+        f"{label.get(int(k), '')} (까닭: {v})" for k, v in body.excluded.items() if v)
+    _tn_set(s, body.team_id, 4, "cond_selected", sel_txt)
+    _tn_set(s, body.team_id, 4, "cond_excluded", exc_txt)
+    log(s, "cond4", team=body.team_id, selected=len(body.selected))
+    s.commit()
+    return {"ok": True}
 
 
 # ── 2차시 활동3: 통과 답 O/X 적합 판정 + 최종 선정 ────────────────────

@@ -1435,6 +1435,108 @@ function DataModule({ teamId, teamLabel, sess, cfg, onLogout }) {
   );
 }
 
+// ─────────── 4차시 — 캠페인 조건 카드 고르기·걸러내기 ───────────
+function ConditionModule({ teamId, teamLabel, sess, cfg, onLogout }) {
+  const [d, setD] = useState(null);
+  const [judge, setJudge] = useState({});       // {idStr: "up"/"down"}
+  const [excluded, setExcluded] = useState({}); // {idStr: 까닭}
+  const [selected, setSelected] = useState([]); // [id]
+  const [msg, setMsg] = useState("");
+
+  const load = async () => {
+    const r = await fetch(`${API}/api/team/${teamId}/cond4`);
+    const j = await r.json(); setD(j);
+    setJudge(prev => Object.keys(prev).length ? prev : (j.judge||{}));
+    setExcluded(prev => Object.keys(prev).length ? prev : (j.excluded||{}));
+    setSelected(prev => prev.length ? prev : (j.selected||[]));
+  };
+  useEffect(()=>{ load(); const t=setInterval(load,5000); return ()=>clearInterval(t); },[teamId]);
+
+  const setJ = (id, val) => {
+    const k = String(id);
+    setJudge({...judge, [k]: val});
+    if (val==="down") setSelected(selected.filter(x=>x!==id));
+    else { const ne={...excluded}; delete ne[k]; setExcluded(ne); }
+  };
+  const setReason = (id, v) => setExcluded({...excluded, [String(id)]: v});
+  const toggleSel = (id) => {
+    if (judge[String(id)]==="down") return;
+    if (selected.includes(id)) setSelected(selected.filter(x=>x!==id));
+    else if (selected.length<3) setSelected([...selected, id]);
+  };
+  const save = async () => {
+    await fetch(`${API}/api/team/cond4`, {method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({team_id:Number(teamId), judge, excluded, selected})});
+    setMsg("저장했어요."); load();
+  };
+
+  if(!d) return <div className="card">불러오는 중…</div>;
+  const cardLabel = (c)=>`[${c.label}] ${c.text}`;
+
+  return (
+    <div>
+      <ModuleHeader sess={sess} cfg={cfg} teamLabel={teamLabel} onLogout={onLogout}
+        right={<button className="ghost" onClick={load}>새로고침</button>} />
+      {cfg.intro && <div className="card" style={{background:"#eef2f8"}}>{cfg.intro}</div>}
+
+      <div className="card">
+        <b>오늘의 목적</b>
+        <div className="prompt" style={{marginTop:6}}>{d.purpose}</div>
+        <div className="muted" style={{marginTop:8}}>
+          모둠 역할: <b>조작이</b>(앱 조작) · <b>기록이</b>(고른 조건·까닭 적기) · <b>발표이</b>(발표) — 돌아가며 맡아요.
+        </div>
+      </div>
+
+      <div className="card">
+        <b>활동 · 조건 카드 판정 (👍 도움 / 👎 방해)</b>
+        <div className="muted" style={{margin:"4px 0"}}>
+          조건을 하나씩 보며 "우리 캠페인에 도움이 될까?"를 판정해요. 👎(방해)로 뺀 것은 <b>왜 빼는지</b> 적어요.
+        </div>
+        {d.cards.map(c=>{
+          const j = judge[String(c.id)];
+          return (
+            <div key={c.id} style={{marginTop:10,borderTop:"1px dashed var(--line)",paddingTop:8}}>
+              <div><b>[{c.label}]</b> {c.text}</div>
+              <div className="tags" style={{marginTop:6}}>
+                <span className={"tag"+(j==="up"?" on":"")} onClick={()=>setJ(c.id,"up")}>👍 도움</span>
+                <span className={"tag"+(j==="down"?" on":"")} onClick={()=>setJ(c.id,"down")}>👎 방해(제외)</span>
+              </div>
+              {j==="down" && (
+                <input value={excluded[String(c.id)]||""} onChange={e=>setReason(c.id,e.target.value)}
+                  placeholder="왜 빼나요? (한 줄)"
+                  style={{width:"100%",marginTop:6,padding:8,border:"1px solid var(--line)",borderRadius:8,font:"inherit"}} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="card">
+        <b>우리가 쓸 조건 3개 고르기</b>
+        <div className="muted" style={{margin:"4px 0"}}>
+          👎로 뺀 것 말고, 목적에 가장 맞는 <b>3개</b>를 골라요. (지금 {selected.length}/3)
+        </div>
+        {d.cards.filter(c=>judge[String(c.id)]!=="down").map(c=>(
+          <label key={c.id} style={{display:"flex",gap:8,alignItems:"center",padding:"5px 0",cursor:"pointer"}}>
+            <input type="checkbox" checked={selected.includes(c.id)} onChange={()=>toggleSel(c.id)}
+              disabled={!selected.includes(c.id) && selected.length>=3} />
+            <span><b>[{c.label}]</b> {c.text}</span>
+          </label>
+        ))}
+        <div className="row" style={{marginTop:10, alignItems:"center"}}>
+          <button className="primary" onClick={save}>저장</button>
+          {msg && <span className="muted">{msg}</span>}
+        </div>
+        {selected.length>0 && (
+          <div className="prompt" style={{marginTop:10,background:"#fff",border:"1px solid #cde8d5"}}>
+            우리 모둠이 고른 조건 3개: {d.cards.filter(c=>selected.includes(c.id)).map(cardLabel).join(" / ")}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─────────── 2차시 활동3 — 통과 답 O/X 적합 판정 + 최종 선정 ───────────
 function ActivitySection({ teamId, sess }) {
   const [data, setData] = useState(null);
@@ -1702,6 +1804,7 @@ function App() {
     switch (cfg.mode) {
       case "judge":    return <JudgeModule {...p} />;
       case "data":     return <DataModule {...p} />;
+      case "condition":return <ConditionModule {...p} />;
       case "retrace":  return <RetraceModule {...p} />;
       case "peer":     return <PeerModule {...p} />;
       case "transfer": return <TransferModule {...p} />;
