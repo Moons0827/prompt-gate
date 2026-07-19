@@ -154,17 +154,29 @@ DATA3_QUESTIONS = [
 # 3차시 도입 '오늘 급식 조사'의 '왜' 선택지
 DATA3_WHY = ["양이 많아서", "좋아하는 음식이 아니어서", "먹을 시간이 부족해서", "기타"]
 
-# 4차시 활동1 — 캠페인 조건 카드 8장(도움 5 / 방해 3)
-COND4_PURPOSE = "우리 반 게시판에 붙일, 초등학생이 실천할 짧은 '잔반 줄이기 문구' 만들기"
+# 4차시 활동1 — 모둠별 '대상·붙일 곳' 미션 + 조건 카드(모둠에 따라 판정이 달라진다)
+COND4_PURPOSE = "우리 반 잔반을 줄이는 '캠페인 문구'를 만들기. 모둠마다 붙일 곳·대상이 다르니, 조건도 달라져요!"
+COND4_MISSIONS = {
+    1: {"title": "급식실 입구 포스터", "desc": "지나가며 3초 안에 읽힘"},
+    2: {"title": "1학년 동생 교실 안내", "desc": "아주 쉬운 말 + 그림"},
+    3: {"title": "아침 교내 방송 30초 멘트", "desc": "소리 내어 읽기 좋게"},
+    4: {"title": "가정통신/알림장 한 줄", "desc": "부모님도 보심"},
+    5: {"title": "잔반통 옆 한 문장 슬로건", "desc": "버리기 직전에 보임"},
+    6: {"title": "게시판 카드뉴스 제목 3개", "desc": "눈에 확 띄는 제목"},
+}
+# kind: good(대체로 도움) / depends(대상에 따라) / bad(누구에게나 방해=앵커)
 COND4_CARDS = [
-    {"id": 1, "label": "대상", "text": "초등학생이 이해하기 쉽게", "helpful": True},
-    {"id": 2, "label": "개수", "text": "세 가지만", "helpful": True},
-    {"id": 3, "label": "형식", "text": "짧은 게시판 문구로", "helpful": True},
-    {"id": 4, "label": "관점", "text": "우리 반이 직접 할 수 있는 것만", "helpful": True},
-    {"id": 5, "label": "범위", "text": "급식 시간에 할 수 있는 것으로", "helpful": True},
-    {"id": 6, "label": "방해", "text": "어려운 전문 용어를 잔뜩 넣기", "helpful": False},
-    {"id": 7, "label": "방해", "text": "스무 가지를 모두 넣기", "helpful": False},
-    {"id": 8, "label": "방해", "text": "어른 회의 발표 자료로 만들기", "helpful": False},
+    {"id": 1, "label": "분량", "text": "핵심만 짧게", "kind": "good"},
+    {"id": 2, "label": "실천", "text": "우리 반이 직접 할 수 있는 것만", "kind": "good"},
+    {"id": 3, "label": "때", "text": "급식 시간에 바로 할 수 있는 것으로", "kind": "good"},
+    {"id": 4, "label": "표현", "text": "그림·이모지 곁들이기", "kind": "depends"},
+    {"id": 5, "label": "말맛", "text": "소리 내어 읽기 좋은 리듬으로", "kind": "depends"},
+    {"id": 6, "label": "말투", "text": "존댓말로 쓰기", "kind": "depends"},
+    {"id": 7, "label": "난이도", "text": "아주 쉬운 말로(1학년도 이해)", "kind": "depends"},
+    {"id": 8, "label": "속도", "text": "딱 3초 안에 읽히게", "kind": "depends"},
+    {"id": 9, "label": "용어", "text": "어려운 전문 용어를 잔뜩 넣기", "kind": "bad"},
+    {"id": 10, "label": "개수", "text": "스무 가지를 모두 넣기", "kind": "bad"},
+    {"id": 11, "label": "형식", "text": "어른 회의 발표 자료로 만들기", "kind": "bad"},
 ]
 
 # 4차시 활동2 — 거꾸로 맞히기(같은 데이터, 조건만 다른 세 답변 A·B·C)
@@ -1280,9 +1292,12 @@ def cond4_state(team_id: int, s: Session = Depends(db)):
         st2 = json.loads(_tn_get(s, team_id, 4, "cond2") or "{}")
     except Exception:
         st2 = {}
+    m = COND4_MISSIONS.get(((team.number - 1) % 6) + 1,
+                           {"title": "우리 모둠 미션", "desc": "대상·붙일 곳을 정해요"})
     return {
         "cards": COND4_CARDS,
         "purpose": COND4_PURPOSE,
+        "mission": {"team_no": team.number, **m},
         "judge": st.get("judge", {}),          # {id: "up"/"down"}
         "excluded": st.get("excluded", {}),    # {id: 빼는 까닭}
         "selected": st.get("selected", []),    # [id] 최대 3

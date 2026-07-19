@@ -1507,7 +1507,8 @@ function ConditionModule({ teamId, teamLabel, sess, cfg, onLogout }) {
   const saveFinal = async()=>{ await Promise.all([note4("final_phrase",finalPhrase),note4("change_note",changeNote)]); setMsg("활동3을 저장·제출했어요."); load(); };
   const buildAfter = () => {
     const conds = d.cards.filter(c=>selected.includes(c.id)).map(c=>c.text).join(", ");
-    setAfterQ(`${d.data3_summary} 이 조사 결과를 바탕으로, ${conds ? conds+" 조건에 맞게 " : ""}초등학생이 급식 시간에 바로 실천할 수 있는 잔반 줄이기 캠페인 문구를 제안해 주세요.`);
+    const m = d.mission ? `${d.mission.title}(${d.mission.desc})에 쓸 ` : "";
+    setAfterQ(`${d.data3_summary} 이 조사 결과를 바탕으로, ${m}${conds ? conds+" 조건에 맞게 " : ""}초등학생이 실천할 수 있는 잔반 줄이기 캠페인 문구를 제안해 주세요.`);
   };
   const castVote = async (choice) => {
     await fetch(`${API}/api/team/vote4`, {method:"POST",headers:{"Content-Type":"application/json"},
@@ -1528,6 +1529,13 @@ function ConditionModule({ teamId, teamLabel, sess, cfg, onLogout }) {
       <div className="card">
         <b>오늘의 목적</b>
         <div className="prompt" style={{marginTop:6}}>{d.purpose}</div>
+        {d.mission && (
+          <div className="card" style={{marginTop:10, background:"#fdf6e3", border:"2px solid #e0b84a"}}>
+            <div className="muted">우리 모둠 미션 ({d.mission.team_no}조)</div>
+            <div style={{fontSize:18, fontWeight:700, marginTop:2}}>🎯 {d.mission.title}</div>
+            <div className="muted" style={{marginTop:2}}>{d.mission.desc}</div>
+          </div>
+        )}
         <div className="muted" style={{marginTop:8}}>
           모둠 역할: <b>조작이</b>(앱 조작) · <b>기록이</b>(고른 조건·까닭 적기) · <b>발표이</b>(발표) — 돌아가며 맡아요.
         </div>
@@ -1536,7 +1544,8 @@ function ConditionModule({ teamId, teamLabel, sess, cfg, onLogout }) {
       <div className="card">
         <b>활동 · 조건 카드 판정 (👍 도움 / 👎 방해)</b>
         <div className="muted" style={{margin:"4px 0"}}>
-          조건을 하나씩 보며 "우리 캠페인에 도움이 될까?"를 판정해요. 👎(방해)로 뺀 것은 <b>왜 빼는지</b> 적어요.
+          같은 카드라도 <b>우리 모둠 미션</b>에 도움이 되는지 생각해서 판정해요.
+          (다른 모둠은 다르게 판정할 수 있어요!) 👎로 뺀 것은 <b>왜 빼는지</b> 적어요.
         </div>
         {d.cards.map(c=>{
           const j = judge[String(c.id)];
@@ -1560,7 +1569,7 @@ function ConditionModule({ teamId, teamLabel, sess, cfg, onLogout }) {
       <div className="card">
         <b>우리가 쓸 조건 3개 고르기</b>
         <div className="muted" style={{margin:"4px 0"}}>
-          👎로 뺀 것 말고, 목적에 가장 맞는 <b>3개</b>를 골라요. (지금 {selected.length}/3)
+          👎로 뺀 것 말고, <b>우리 모둠 미션</b>에 가장 맞는 <b>3개</b>를 골라요. (지금 {selected.length}/3)
         </div>
         {d.cards.filter(c=>judge[String(c.id)]!=="down").map(c=>(
           <label key={c.id} style={{display:"flex",gap:8,alignItems:"center",padding:"5px 0",cursor:"pointer"}}>
