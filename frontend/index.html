@@ -1441,6 +1441,10 @@ function ConditionModule({ teamId, teamLabel, sess, cfg, onLogout }) {
   const [judge, setJudge] = useState({});       // {idStr: "up"/"down"}
   const [excluded, setExcluded] = useState({}); // {idStr: 까닭}
   const [selected, setSelected] = useState([]); // [id]
+  const [match, setMatch] = useState({});       // 활동2: {answerKey: optKey}
+  const [achecks, setAchecks] = useState({});   // {answerKey: {idx: bool}}
+  const [diff, setDiff] = useState("");
+  const [revealed, setRevealed] = useState(false);
   const [msg, setMsg] = useState("");
 
   const load = async () => {
@@ -1449,6 +1453,9 @@ function ConditionModule({ teamId, teamLabel, sess, cfg, onLogout }) {
     setJudge(prev => Object.keys(prev).length ? prev : (j.judge||{}));
     setExcluded(prev => Object.keys(prev).length ? prev : (j.excluded||{}));
     setSelected(prev => prev.length ? prev : (j.selected||[]));
+    setMatch(prev => Object.keys(prev).length ? prev : (j.match||{}));
+    setAchecks(prev => Object.keys(prev).length ? prev : (j.answer_checks||{}));
+    setDiff(prev => prev || (j.diff||""));
   };
   useEffect(()=>{ load(); const t=setInterval(load,5000); return ()=>clearInterval(t); },[teamId]);
 
@@ -1469,9 +1476,17 @@ function ConditionModule({ teamId, teamLabel, sess, cfg, onLogout }) {
       body:JSON.stringify({team_id:Number(teamId), judge, excluded, selected})});
     setMsg("저장했어요."); load();
   };
+  const setMatchFor = (k, opt) => setMatch({...match, [k]: opt});
+  const toggleCheck = (k, i) => setAchecks({...achecks, [k]: {...(achecks[k]||{}), [i]: !((achecks[k]||{})[i])}});
+  const saveMatch = async () => {
+    await fetch(`${API}/api/team/cond4/match`, {method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({team_id:Number(teamId), match, checks:achecks, diff})});
+    setMsg("활동2를 저장했어요."); load();
+  };
 
   if(!d) return <div className="card">불러오는 중…</div>;
   const cardLabel = (c)=>`[${c.label}] ${c.text}`;
+  const optLabel = (k)=>(d.match_options.find(o=>o.key===k)||{}).label||k;
 
   return (
     <div>
@@ -1532,6 +1547,49 @@ function ConditionModule({ teamId, teamLabel, sess, cfg, onLogout }) {
             우리 모둠이 고른 조건 3개: {d.cards.filter(c=>selected.includes(c.id)).map(cardLabel).join(" / ")}
           </div>
         )}
+      </div>
+
+      <div className="card">
+        <b>활동 2 · 거꾸로 맞히기 — 어떤 조건이 들어갔을까?</b>
+        <div className="muted" style={{margin:"4px 0"}}>
+          같은 데이터로 만든 세 답변이에요. 답만 보고 <b>어떤 조건이 들어갔는지</b> 거꾸로 맞혀 보세요.
+        </div>
+        {d.answers.map(a=>{
+          const mine = match[a.key];
+          const ok = mine===d.correct[a.key];
+          return (
+            <div key={a.key} style={{marginTop:12, borderTop:"1px dashed var(--line)", paddingTop:8}}>
+              <b>답변 {a.key}</b>
+              <div className="prompt" style={{marginTop:4}}>{a.text}</div>
+              <div className="muted" style={{marginTop:6}}>어떤 조건이 들어갔을까?</div>
+              <div className="tags" style={{marginTop:4}}>
+                {d.match_options.map(o=>(
+                  <span key={o.key} className={"tag"+(mine===o.key?" on":"")} onClick={()=>setMatchFor(a.key,o.key)}>{o.label}</span>
+                ))}
+              </div>
+              {revealed && mine && (
+                <div className={ok?"card ok":"card alert"} style={{marginTop:6, padding:8}}>
+                  {ok ? "✔ 맞았어요! " : "✗ 다시 봐요. "} 정답: <b>{optLabel(d.correct[a.key])}</b>
+                  <div className="muted" style={{marginTop:4}}>실제 질문: {d.questions[d.correct[a.key]]}</div>
+                </div>
+              )}
+              <div className="muted" style={{marginTop:8}}>캠페인 점검단 — 이 답변 점검</div>
+              {d.checks.map((ch,i)=>(
+                <label key={i} style={{display:"block", fontSize:14, margin:"2px 0"}}>
+                  <input type="checkbox" checked={!!(achecks[a.key]||{})[i]} onChange={()=>toggleCheck(a.key,i)} /> {ch}
+                </label>
+              ))}
+            </div>
+          );
+        })}
+        <div className="row" style={{marginTop:12, alignItems:"center"}}>
+          <button className="ghost" onClick={()=>setRevealed(!revealed)}>{revealed?"정답 숨기기":"정답 보기"}</button>
+          <button className="primary" onClick={saveMatch}>활동2 저장</button>
+          {msg && <span className="muted">{msg}</span>}
+        </div>
+        <div className="muted" style={{marginTop:10}}>세 답변의 차이를 한마디로!</div>
+        <textarea value={diff} onChange={e=>setDiff(e.target.value)}
+          placeholder="예: 조건이 자세할수록 짧고 우리 반에 맞는 답이 나온다." />
       </div>
     </div>
   );

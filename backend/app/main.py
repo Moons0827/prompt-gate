@@ -167,6 +167,31 @@ COND4_CARDS = [
     {"id": 8, "label": "방해", "text": "어른 회의 발표 자료로 만들기", "helpful": False},
 ]
 
+# 4차시 활동2 — 거꾸로 맞히기(같은 데이터, 조건만 다른 세 답변 A·B·C)
+COND4_ANSWERS = [
+    {"key": "A", "text": "급식을 남기지 않으려면 평소에 골고루 먹는 습관을 기르고, 음식이 우리 "
+                         "식탁에 오르기까지 많은 분들의 정성과 노력이 담겨 있음을 늘 기억하며, "
+                         "감사한 마음으로 알맞게 덜어 먹으려는 태도를 꾸준히 지니는 것이 중요합니다. "
+                         "편식하지 않고 다양한 영양을 고르게 섭취하는 것도 큰 도움이 됩니다."},
+    {"key": "B", "text": "① 먹을 수 있는 만큼만 받기  ② 안 먹어 본 반찬도 한 번은 맛보기  "
+                         "③ 다 먹으면 스스로 칭찬하기"},
+    {"key": "C", "text": "'받을 땐 딱 알맞게!'  /  '한 입 도전, 오늘의 용기!'  /  '내 그릇 깨끗, 지구도 방긋!'"},
+]
+COND4_MATCH_OPTIONS = [
+    {"key": "none", "label": "조건 없음"},
+    {"key": "count", "label": "개수 (세 가지만)"},
+    {"key": "tcf", "label": "대상·개수·형식 (초등학생·3개·짧은 문구)"},
+]
+COND4_CORRECT = {"A": "none", "B": "count", "C": "tcf"}
+_COND4_BASE = "오늘 우리 반 25명 중 8명이 급식을 남겼고, 그중 5명은 양이 많아서 남겼어."
+COND4_QUESTIONS = {
+    "none": f"{_COND4_BASE} 잔반을 줄이는 방법을 알려 줘.",
+    "count": f"{_COND4_BASE} 잔반을 줄이는 방법을 세 가지만 알려 줘.",
+    "tcf": f"{_COND4_BASE} 초등학생이 급식 시간에 바로 할 수 있는 방법을, "
+           "게시판에 붙일 짧은 문구 세 개로 알려 줘.",
+}
+COND4_CHECKS = ["개수 조건(3개)이 지켜졌나?", "초등학생이 이해할 수 있나?", "게시판에 붙일 만큼 짧은가?"]
+
 # 태그를 쓰는 차시(되돌림 있는 차시)에 기본 4태그를 붙인다.
 for _n, _cfg in SESSIONS.items():
     if _cfg["mode"] in ("loop", "retrace", "peer"):
@@ -1244,12 +1269,25 @@ def cond4_state(team_id: int, s: Session = Depends(db)):
         st = json.loads(_tn_get(s, team_id, 4, "cond") or "{}")
     except Exception:
         st = {}
+    try:
+        st2 = json.loads(_tn_get(s, team_id, 4, "cond2") or "{}")
+    except Exception:
+        st2 = {}
     return {
         "cards": COND4_CARDS,
         "purpose": COND4_PURPOSE,
         "judge": st.get("judge", {}),          # {id: "up"/"down"}
         "excluded": st.get("excluded", {}),    # {id: 빼는 까닭}
         "selected": st.get("selected", []),    # [id] 최대 3
+        # 활동2 — 거꾸로 맞히기
+        "answers": COND4_ANSWERS,
+        "match_options": COND4_MATCH_OPTIONS,
+        "correct": COND4_CORRECT,
+        "questions": COND4_QUESTIONS,
+        "checks": COND4_CHECKS,
+        "match": st2.get("match", {}),         # {answerKey: optKey}
+        "answer_checks": st2.get("checks", {}),  # {answerKey: {checkIdx: bool}}
+        "diff": st2.get("diff", ""),
     }
 
 
@@ -1278,6 +1316,32 @@ def cond4_save(body: Cond4In, s: Session = Depends(db)):
     log(s, "cond4", team=body.team_id, selected=len(body.selected))
     s.commit()
     return {"ok": True}
+
+
+class Cond4MatchIn(BaseModel):
+    team_id: int
+    match: dict[str, str] = {}     # {answerKey: optKey}
+    checks: dict = {}              # {answerKey: {checkIdx: bool}}
+    diff: str = ""
+
+
+@app.post("/api/team/cond4/match")
+def cond4_match(body: Cond4MatchIn, s: Session = Depends(db)):
+    """활동2: 답변(A·B·C)이 어떤 조건인지 거꾸로 맞히기 + 점검 + 차이 저장."""
+    team = s.get(Team, body.team_id)
+    if not team:
+        raise HTTPException(404, "없는 조")
+    st = {"match": body.match, "checks": body.checks, "diff": body.diff}
+    _tn_set(s, body.team_id, 4, "cond2", json.dumps(st, ensure_ascii=False))
+    opt = {o["key"]: o["label"] for o in COND4_MATCH_OPTIONS}
+    correct = sum(1 for k, v in body.match.items() if COND4_CORRECT.get(k) == v)
+    m_txt = " / ".join(f"{k}={opt.get(v, v)}" for k, v in body.match.items())
+    _tn_set(s, body.team_id, 4, "cond2_match", f"{m_txt} (정답 {correct}/3)")
+    if body.diff.strip():
+        _tn_set(s, body.team_id, 4, "cond2_diff", body.diff.strip())
+    log(s, "cond4_match", team=body.team_id, correct=correct)
+    s.commit()
+    return {"ok": True, "correct": correct}
 
 
 # ── 2차시 활동3: 통과 답 O/X 적합 판정 + 최종 선정 ────────────────────
