@@ -1450,11 +1450,14 @@ function ConditionModule({ teamId, teamLabel, sess, cfg, onLogout }) {
   const [finalPhrase, setFinalPhrase] = useState("");
   const [changeNote, setChangeNote] = useState("");
   const [running, setRunning] = useState("");
+  const [vote, setVote] = useState(null);
   const [msg, setMsg] = useState("");
 
   const load = async () => {
     const r = await fetch(`${API}/api/team/${teamId}/cond4`);
     const j = await r.json(); setD(j);
+    const rv = await fetch(`${API}/api/team/${teamId}/vote4`);
+    if (rv.ok) setVote(await rv.json());
     setJudge(prev => Object.keys(prev).length ? prev : (j.judge||{}));
     setExcluded(prev => Object.keys(prev).length ? prev : (j.excluded||{}));
     setSelected(prev => prev.length ? prev : (j.selected||[]));
@@ -1505,6 +1508,11 @@ function ConditionModule({ teamId, teamLabel, sess, cfg, onLogout }) {
   const buildAfter = () => {
     const conds = d.cards.filter(c=>selected.includes(c.id)).map(c=>c.text).join(", ");
     setAfterQ(`${d.data3_summary} 이 조사 결과를 바탕으로, ${conds ? conds+" 조건에 맞게 " : ""}초등학생이 급식 시간에 바로 실천할 수 있는 잔반 줄이기 캠페인 문구를 제안해 주세요.`);
+  };
+  const castVote = async (choice) => {
+    await fetch(`${API}/api/team/vote4`, {method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({team_id:Number(teamId), choice})});
+    setMsg(`${choice}조 문구에 투표했어요.`); load();
   };
 
   if(!d) return <div className="card">불러오는 중…</div>;
@@ -1665,6 +1673,48 @@ function ConditionModule({ teamId, teamLabel, sess, cfg, onLogout }) {
           placeholder="예: 조건을 넣으니 짧고 우리 반이 바로 쓸 수 있는 문구가 나왔다." />
         <div><button className="primary" style={{marginTop:8}} onClick={saveFinal}
           disabled={!finalPhrase.trim() && !changeNote.trim()}>활동3 저장·제출</button></div>
+      </div>
+
+      <div className="card">
+        <b>우리 반 캠페인 문구 확정하기 (투표)</b>
+        <div className="muted" style={{margin:"4px 0"}}>
+          각 조가 활동3에서 제출한 문구가 후보예요. 우리 조가 <b>가장 좋은 문구 하나</b>에 투표해요. (조당 한 표, 바꿀 수 있어요)
+        </div>
+        {(!vote || vote.candidates.length===0) ? (
+          <div className="muted">아직 후보가 없어요. (활동3에서 완성 문구를 저장하면 후보가 됩니다)</div>
+        ) : (
+          <>
+            {vote.candidates.map(c=>{
+              const cnt = vote.tally[String(c.team_no)] || 0;
+              const mine = vote.my_vote===c.team_no;
+              const win = vote.winner===c.team_no && vote.total_votes>0;
+              return (
+                <div key={c.team_no} className="prompt"
+                  style={{marginTop:8, border: win?"2px solid #2a8a4a":"1px solid var(--line)"}}>
+                  <div className="row" style={{justifyContent:"space-between", alignItems:"center"}}>
+                    <b>{c.team_no}조 {win && "🏆"}</b>
+                    <div className="row" style={{alignItems:"center", gap:8}}>
+                      <span className="muted">{cnt}표</span>
+                      <button className={mine?"primary":"ghost"} onClick={()=>castVote(c.team_no)}>
+                        {mine?"✔ 투표함":"투표"}
+                      </button>
+                    </div>
+                  </div>
+                  <div style={{marginTop:4, whiteSpace:"pre-wrap"}}>{c.phrase}</div>
+                </div>
+              );
+            })}
+            <div style={{marginTop:12, borderTop:"1px dashed var(--line)", paddingTop:10}}>
+              {vote.total_votes>0 ? (
+                <div>
+                  <b>🏆 지금 최다 득표:</b> {vote.winner}조
+                  <div className="prompt" style={{marginTop:6, background:"#eef7f0", border:"1px solid #cde8d5"}}>{vote.winner_phrase}</div>
+                  <div className="muted" style={{marginTop:4}}>총 {vote.total_votes}표</div>
+                </div>
+              ) : <div className="muted">아직 표가 없어요.</div>}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

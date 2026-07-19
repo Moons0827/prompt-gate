@@ -1386,6 +1386,60 @@ async def cond4_ask(body: Cond4AskIn, s: Session = Depends(db)):
     return {"answer": g.text.strip()}
 
 
+@app.get("/api/team/{team_id}/vote4")
+def vote4_state(team_id: int, s: Session = Depends(db)):
+    """우리 반 캠페인 문구 확정 투표: 후보(조별 완성 문구) + 득표 집계 + 최다 득표."""
+    team = s.get(Team, team_id)
+    if not team:
+        raise HTTPException(404, "없는 조")
+    cid = team.classroom_id
+    cand_rows = s.execute(
+        select(Team.number, TeamNote.text).join(
+            TeamNote, (TeamNote.team_id == Team.id)
+            & (TeamNote.session_no == 4) & (TeamNote.key == "final_phrase"))
+        .where(Team.classroom_id == cid).order_by(Team.number)
+    ).all()
+    candidates = [{"team_no": n, "phrase": t.strip()} for n, t in cand_rows if t.strip()]
+    vote_rows = s.execute(
+        select(TeamNote.text).join(
+            Team, Team.id == TeamNote.team_id)
+        .where(Team.classroom_id == cid, TeamNote.session_no == 4, TeamNote.key == "vote")
+    ).all()
+    tally: dict[int, int] = {}
+    for (choice,) in vote_rows:
+        if choice and choice.strip().isdigit():
+            c = int(choice)
+            tally[c] = tally.get(c, 0) + 1
+    my = _tn_get(s, team_id, 4, "vote")
+    winner = max(tally.items(), key=lambda x: x[1])[0] if tally else None
+    win_phrase = next((c["phrase"] for c in candidates if c["team_no"] == winner), "")
+    return {
+        "candidates": candidates,
+        "tally": {str(k): v for k, v in tally.items()},
+        "my_vote": int(my) if my.strip().isdigit() else None,
+        "winner": winner,
+        "winner_phrase": win_phrase,
+        "total_votes": sum(tally.values()),
+    }
+
+
+class Vote4In(BaseModel):
+    team_id: int
+    choice: int   # 후보 조 번호
+
+
+@app.post("/api/team/vote4")
+def vote4_cast(body: Vote4In, s: Session = Depends(db)):
+    """우리 조가 캠페인 문구 후보 하나에 투표한다(조당 한 표, 바꿀 수 있음)."""
+    team = s.get(Team, body.team_id)
+    if not team:
+        raise HTTPException(404, "없는 조")
+    _tn_set(s, body.team_id, 4, "vote", str(body.choice))
+    log(s, "vote4", team=body.team_id, choice=body.choice)
+    s.commit()
+    return {"ok": True}
+
+
 # ── 2차시 활동3: 통과 답 O/X 적합 판정 + 최종 선정 ────────────────────
 @app.get("/api/team/{team_id}/activity/{session_no}")
 def activity_get(team_id: int, session_no: int, s: Session = Depends(db)):
